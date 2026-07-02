@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: abbc-page
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: GOOGLE_SHEETS_ENABLED
+        value: true
+      - key: GOOGLE_SHEETS_WEBHOOK_URL
+        sync: false
+      - key: ABBC_SITE_URL
+        sync: false
+      - key: ABBC_BENEFICIARY_NAME
+        value: ASSOCIACAO BRASILEIRA DE BENEFICIO A COMUNIDADE
+      - key: ABBC_BENEFICIARY_CNPJ
+        value: 26.714.591/0001-52
+      - key: ABBC_BANK_NAME
+        value: BANCO DO BRASIL S.A.
+      - key: ABBC_BANK_CODE
+        value: 001
+      - key: ABBC_BANK_AGENCY
+        value: 6934-5
+      - key: ABBC_BANK_ACCOUNT
+        value: 13.186-5
+      - key: ABBC_IBAN
+        value: BR50000000000069340000131865C1
+      - key: ABBC_SWIFT_BIC
+        value: BRASBRRJSBO
+      - key: ABBC_BANK_ADDRESS
+        value: Rua São Bento, 465, 5º andar - Centro - São Paulo/SP, Brazil
+      - key: ABBC_CORRESPONDENT_BANK
+        value: Not applicable
