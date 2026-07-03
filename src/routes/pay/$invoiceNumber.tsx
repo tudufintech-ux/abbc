@@ -3,6 +3,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Check, Copy, Landmark, QrCode } from "lucide-react";
 
 import {
+  SUPPORTED_CURRENCIES,
+  type CurrencyCode,
   formatCurrencyAmount,
   getCurrencyConfig,
   isBrlCurrency,
@@ -17,43 +19,86 @@ export const Route = createFileRoute("/pay/$invoiceNumber")({
   component: PayInvoicePage,
 });
 
-function formatMoney(value: number, currency: StoredDonationInvoice["currency"]) {
-  return formatCurrencyAmount(value, currency);
+type PayInvoiceData = Omit<StoredDonationInvoice, "currency" | "status"> & {
+  currency: CurrencyCode | "";
+  status: string;
+};
+
+function isSupportedCurrency(value: string): value is CurrencyCode {
+  return SUPPORTED_CURRENCIES.some((currency) => currency.code === value);
 }
 
-function createMockInvoice(invoiceNumber: string): StoredDonationInvoice {
+function formatMoney(value: number, currency: CurrencyCode) {
+  if (currency === "BRL") return `BRL ${formatCurrencyAmount(value, currency)}`;
+  return `${currency} ${new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value)}`;
+}
+
+function normalizeQueryStatus(status: string | null) {
+  if (!status) return "Pending / Awaiting Payment";
+  if (status === "awaiting_wire_transfer" || status === "Awaiting Wire Transfer") {
+    return "Pending / Awaiting Payment";
+  }
+  return status.replace(/_/g, " ");
+}
+
+function getQueryParam(params: URLSearchParams, key: string) {
+  return params.get(key)?.trim() ?? "";
+}
+
+function createInvoiceFromQueryParams(invoiceNumber: string): PayInvoiceData | null {
+  const params = new URLSearchParams(window.location.search);
+  const hasInvoiceQueryParams = [
+    "amount",
+    "currency",
+    "donorName",
+    "donorCountry",
+    "purpose",
+    "status",
+  ].some((key) => params.has(key));
+
+  if (!hasInvoiceQueryParams) return null;
+
+  const currencyParam = getQueryParam(params, "currency").toUpperCase();
+  const amount = Number(getQueryParam(params, "amount"));
+
   return {
     invoiceNumber,
     issueDate: new Date().toLocaleDateString("pt-BR"),
-    donorName: "Invoice pending donor data",
+    donorName: getQueryParam(params, "donorName"),
     donorDocumentType: "",
     donorDocumentNumber: "",
     donorTaxId: "",
-    country: "",
+    country: getQueryParam(params, "donorCountry"),
     donorEmail: "",
     donorPhone: "",
-    amount: 0,
-    currency: "BRL",
-    purpose: "Donation to A.B.B.C. social projects",
-    notes: "Mock invoice loaded locally. Future backend/Supabase lookup should replace this fallback.",
-    status: "Awaiting Wire Transfer",
-    paymentUrl: typeof window === "undefined" ? `/pay/${invoiceNumber}` : window.location.href,
+    amount,
+    currency: isSupportedCurrency(currencyParam) ? currencyParam : "",
+    purpose: getQueryParam(params, "purpose"),
+    notes: "",
+    status: normalizeQueryStatus(params.get("status")),
+    paymentUrl: window.location.href,
     createdAt: new Date().toISOString(),
   };
 }
 
 function PayInvoicePage() {
   const { invoiceNumber } = Route.useParams();
-  const [invoice, setInvoice] = useState<StoredDonationInvoice | null>(null);
+  const [invoice, setInvoice] = useState<PayInvoiceData | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
 
   useEffect(() => {
-    setInvoice(getStoredInvoice(invoiceNumber) ?? createMockInvoice(invoiceNumber));
+    setInvoice(getStoredInvoice(invoiceNumber) ?? createInvoiceFromQueryParams(invoiceNumber));
   }, [invoiceNumber]);
 
-  const isBrlInvoice = invoice ? isBrlCurrency(invoice.currency) : false;
+  const hasCompletePaymentInfo = Boolean(
+    invoice?.invoiceNumber && Number.isFinite(invoice.amount) && invoice.amount > 0 && invoice.currency,
+  );
+  const isBrlInvoice = hasCompletePaymentInfo && invoice?.currency ? isBrlCurrency(invoice.currency) : false;
   const canPayByPix = isBrlInvoice;
-  const selectedCurrency = invoice ? getCurrencyConfig(invoice.currency) : null;
+  const selectedCurrency = invoice?.currency ? getCurrencyConfig(invoice.currency) : null;
 
   const paymentReference = useMemo(
     () => invoice?.invoiceNumber ?? invoiceNumber,
@@ -72,8 +117,18 @@ function PayInvoicePage() {
     return (
       <main className="pay-page">
         <style>{PAY_CSS}</style>
+        <header className="pay-header">
+          <a href="/" className="pay-brand">A.B.B.C</a>
+          <span>Benefício à Comunidade</span>
+        </header>
         <section className="pay-shell">
-          <p>Carregando invoice...</p>
+          <article className="invoice-card empty-state">
+            <h1>Invoice data not found.</h1>
+            <p>Please request a new payment link from ABBC.</p>
+            <a className="contact-button" href="https://wa.me/5511921813353" target="_blank" rel="noopener noreferrer">
+              Contact ABBC
+            </a>
+          </article>
         </section>
       </main>
     );
@@ -94,21 +149,27 @@ function PayInvoicePage() {
               <span className="eyebrow">Payment Page</span>
               <h1>{invoice.invoiceNumber}</h1>
             </div>
-            <span className="status">{invoice.status === "Awaiting Wire Transfer" ? "Pending / Awaiting Payment" : invoice.status}</span>
+            <span className="status">{invoice.status}</span>
           </div>
 
           <div className="invoice-grid">
-            <p><small>Doador</small><b>{invoice.donorName}</b></p>
+            <p><small>Doador</small><b>{invoice.donorName || "-"}</b></p>
             <p><small>País</small><b>{invoice.country || "-"}</b></p>
-            <p><small>Valor</small><b>{formatMoney(invoice.amount, invoice.currency)}</b></p>
-            <p><small>Moeda</small><b>{selectedCurrency ? `${selectedCurrency.flag} ${selectedCurrency.code} — ${selectedCurrency.name}` : invoice.currency}</b></p>
-            <p className="wide"><small>Finalidade</small><b>{invoice.purpose}</b></p>
+            <p><small>Valor</small><b>{hasCompletePaymentInfo && invoice.currency ? formatMoney(invoice.amount, invoice.currency) : "-"}</b></p>
+            <p><small>Moeda</small><b>{selectedCurrency ? `${selectedCurrency.flag} ${selectedCurrency.code} — ${selectedCurrency.name}` : "-"}</b></p>
+            <p className="wide"><small>Finalidade</small><b>{invoice.purpose || "-"}</b></p>
           </div>
 
           <div className="payment-options">
             <h2>Opções de pagamento</h2>
 
-            {canPayByPix ? (
+            {!hasCompletePaymentInfo ? (
+              <section className="payment-box">
+                <p className="error">Payment information is incomplete. Please request a new payment link from ABBC.</p>
+              </section>
+            ) : null}
+
+            {hasCompletePaymentInfo && canPayByPix ? (
               <section className="payment-box">
                 <div className="box-title"><QrCode size={20} /> PIX</div>
                 <p><b>PIX CNPJ:</b> {ABBC_PUBLIC_DETAILS.pixKey}</p>
@@ -120,7 +181,7 @@ function PayInvoicePage() {
               </section>
             ) : null}
 
-            <section className="payment-box">
+            {hasCompletePaymentInfo ? <section className="payment-box">
               <div className="box-title"><Landmark size={20} /> {isBrlInvoice ? "TED/Transferência" : "Wire Transfer (SWIFT)"}</div>
               {!isBrlInvoice ? (
                 <p>Grandes doações internacionais são realizadas por transferência bancária internacional.</p>
@@ -170,7 +231,7 @@ function PayInvoicePage() {
                 {copied === "bank-details" ? <Check size={18} /> : <Copy size={18} />}
                 {copied === "bank-details" ? "Dados copiados" : "Copy Bank Details"}
               </button>
-            </section>
+            </section> : null}
           </div>
         </article>
       </section>
@@ -203,5 +264,9 @@ h1{font-size:clamp(1.9rem,4vw,3rem);margin:0;color:#0e3f4b}
 .payment-box dt{font-weight:900;color:#6c8085}
 .payment-box dd{margin:0;overflow-wrap:anywhere}
 .error{color:#a63636!important;font-weight:800}
+.empty-state{display:grid;gap:14px;text-align:center;justify-items:center}
+.empty-state h1{font-size:clamp(1.8rem,4vw,2.5rem)}
+.empty-state p{color:#425a60;font-size:1.05rem}
+.contact-button{display:inline-flex;align-items:center;justify-content:center;background:#e0992e;color:#3a2705;text-decoration:none;border-radius:999px;padding:12px 18px;font-weight:900}
 @media(max-width:680px){.invoice-card{padding:22px}.invoice-top{display:grid}.invoice-grid,.payment-box dl{grid-template-columns:1fr}.status{white-space:normal}}
 `;

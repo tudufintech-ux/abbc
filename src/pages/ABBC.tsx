@@ -147,6 +147,27 @@ function formatCurrency(value: number, currency: InvoiceCurrency): string {
   return formatCurrencyAmount(value, currency);
 }
 
+function buildInvoicePaymentUrl(input: {
+  invoiceNumber: string;
+  amount: number;
+  currency: InvoiceCurrency;
+  donorName: string;
+  donorCountry: string;
+  purpose: string;
+  status: string;
+}) {
+  const url = new URL(`/pay/${encodeURIComponent(input.invoiceNumber)}`, window.location.origin);
+  url.search = new URLSearchParams({
+    amount: String(input.amount),
+    currency: input.currency,
+    donorName: input.donorName,
+    donorCountry: input.donorCountry,
+    purpose: input.purpose,
+    status: input.status,
+  }).toString();
+  return url.toString();
+}
+
 function parseDecimalAmount(value: string): number {
   const cleaned = value.replace(/[^\d,.-]/g, "");
   const lastComma = cleaned.lastIndexOf(",");
@@ -323,7 +344,7 @@ async function createInternationalInvoicePdf(invoice: InternationalInvoicePdfInp
     return { canvas, ctx };
   };
 
-  const payOnlineUrl = `https://abbc-dw0f.onrender.com/pay/${encodeURIComponent(invoice.invoiceNumber)}`;
+  const payOnlineUrl = invoice.paymentUrl;
   const [logoImage, qrCodeImage] = await Promise.all([
     loadImageSafe(LOGO),
     createQrCodeImage(payOnlineUrl),
@@ -599,7 +620,15 @@ export default function ABBC() {
       }
 
       const invoiceNumber = nextInternationalInvoiceNumber();
-      const paymentUrl = `${window.location.origin}/pay/${encodeURIComponent(invoiceNumber)}`;
+      const paymentUrl = buildInvoicePaymentUrl({
+        invoiceNumber,
+        amount,
+        currency: form.currency,
+        donorName: form.donorName.trim(),
+        donorCountry: form.country.trim(),
+        purpose: form.purpose.trim(),
+        status: "awaiting_wire_transfer",
+      });
       const invoiceWithoutPdf = {
         invoiceNumber,
         issueDate: new Date().toLocaleDateString("pt-BR"),
