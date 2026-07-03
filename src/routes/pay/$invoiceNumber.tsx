@@ -15,6 +15,8 @@ import {
   type StoredDonationInvoice,
 } from "@/lib/invoiceStorage";
 
+const DEFAULT_PAYMENT_TERMS = "Net 30 Days";
+
 export const Route = createFileRoute("/pay/$invoiceNumber")({
   component: PayInvoicePage,
 });
@@ -48,6 +50,38 @@ function getQueryParam(params: URLSearchParams, key: string) {
   return params.get(key)?.trim() ?? "";
 }
 
+function formatInvoiceDate(date: Date): string {
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(date);
+}
+
+function parseInvoiceDate(value: string): Date | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = new Date(trimmed);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function getDefaultDueDate(issueDate: string) {
+  const parsedIssueDate = parseInvoiceDate(issueDate) ?? new Date();
+  const dueDate = new Date(parsedIssueDate);
+  dueDate.setDate(dueDate.getDate() + 30);
+  return formatInvoiceDate(dueDate);
+}
+
+function normalizeInvoiceData(invoice: PayInvoiceData): PayInvoiceData {
+  const issueDate = invoice.issueDate || formatInvoiceDate(new Date(invoice.createdAt || Date.now()));
+  return {
+    ...invoice,
+    issueDate,
+    dueDate: invoice.dueDate || getDefaultDueDate(issueDate),
+    paymentTerms: invoice.paymentTerms || DEFAULT_PAYMENT_TERMS,
+  };
+}
+
 function createInvoiceFromQueryParams(invoiceNumber: string): PayInvoiceData | null {
   const params = new URLSearchParams(window.location.search);
   const hasInvoiceQueryParams = [
@@ -66,7 +100,9 @@ function createInvoiceFromQueryParams(invoiceNumber: string): PayInvoiceData | n
 
   return {
     invoiceNumber,
-    issueDate: new Date().toLocaleDateString("pt-BR"),
+    issueDate: getQueryParam(params, "issueDate") || formatInvoiceDate(new Date()),
+    dueDate: getQueryParam(params, "dueDate"),
+    paymentTerms: getQueryParam(params, "paymentTerms") || DEFAULT_PAYMENT_TERMS,
     donorName: getQueryParam(params, "donorName"),
     donorDocumentType: "",
     donorDocumentNumber: "",
@@ -91,7 +127,8 @@ function PayInvoicePage() {
   const [copied, setCopied] = useState<string | null>(null);
 
   useEffect(() => {
-    setInvoice(getStoredInvoice(invoiceNumber) ?? createInvoiceFromQueryParams(invoiceNumber));
+    const loadedInvoice = getStoredInvoice(invoiceNumber) ?? createInvoiceFromQueryParams(invoiceNumber);
+    setInvoice(loadedInvoice ? normalizeInvoiceData(loadedInvoice) : null);
     setIsInitialized(true);
   }, [invoiceNumber]);
 
@@ -172,6 +209,10 @@ function PayInvoicePage() {
           </div>
 
           <div className="invoice-grid">
+            <p><small>Issue Date</small><b>{invoice.issueDate || "-"}</b></p>
+            <p><small>Due Date</small><b>{invoice.dueDate || "-"}</b></p>
+            <p><small>Payment Terms</small><b>{invoice.paymentTerms || DEFAULT_PAYMENT_TERMS}</b></p>
+            <p><small>Status</small><b>{invoice.status || "-"}</b></p>
             <p><small>Doador</small><b>{invoice.donorName || "-"}</b></p>
             <p><small>País</small><b>{invoice.country || "-"}</b></p>
             <p><small>Valor</small><b>{hasCompletePaymentInfo && invoice.currency ? formatMoney(invoice.amount, invoice.currency) : "-"}</b></p>

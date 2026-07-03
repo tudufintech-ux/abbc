@@ -8,6 +8,9 @@ import {
 type DonationRegisterRequest = {
   invoiceNumber?: unknown;
   createdAt?: unknown;
+  issueDate?: unknown;
+  dueDate?: unknown;
+  paymentTerms?: unknown;
   donorName?: unknown;
   donorDocumentType?: unknown;
   donorDocumentNumber?: unknown;
@@ -55,6 +58,9 @@ function toGoogleSheetsPayload(body: DonationRegisterRequest): GoogleSheetsDonat
   return {
     data_criacao: createdAt,
     invoice_number: invoiceNumber,
+    issue_date: asText(body.issueDate) || createdAt,
+    due_date: asText(body.dueDate),
+    payment_terms: asText(body.paymentTerms) || "Net 30 Days",
     tipo_doacao: "internacional",
     donor_name: asText(body.donorName),
     donor_document_type: asText(body.donorDocumentType),

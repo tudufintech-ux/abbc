@@ -3,6 +3,9 @@ import process from "node:process";
 export type GoogleSheetsDonationPayload = {
   data_criacao: string;
   invoice_number: string;
+  issue_date: string;
+  due_date: string;
+  payment_terms: string;
   tipo_doacao: string;
   donor_name: string;
   donor_document_type: string;

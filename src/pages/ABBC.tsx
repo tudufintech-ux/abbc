@@ -67,6 +67,15 @@ function buildPix(key: string, name: string, city: string): string {
 const PIX_KEY = "26714591000152";
 const PIX_PAYLOAD = buildPix(PIX_KEY, "ABBC ASSOCIACAO", "SAO PAULO");
 const PIX_DISPLAY_KEY = ABBC_PUBLIC_DETAILS.pixKey;
+const DEFAULT_PAYMENT_TERMS = "Net 30 Days";
+const PAYMENT_TERM_OPTIONS = [
+  "Net 15 Days",
+  DEFAULT_PAYMENT_TERMS,
+  "Net 45 Days",
+  "Net 60 Days",
+  "Immediate Payment",
+  "Custom",
+] as const;
 
 function getBankDetailsLines(paymentReference?: string, includeInternational = true) {
   return [
@@ -105,6 +114,9 @@ type InternationalInvoiceFormState = {
   donorPhone: string;
   amount: string;
   currency: InvoiceCurrency;
+  issueDate: string;
+  dueDate: string;
+  paymentTerms: string;
   purpose: string;
   notes: string;
 };
@@ -126,6 +138,9 @@ const INITIAL_INTERNATIONAL_INVOICE_FORM: InternationalInvoiceFormState = {
   donorPhone: "",
   amount: "",
   currency: "USD",
+  issueDate: getTodayInvoiceDate(),
+  dueDate: getDefaultDueDate(getTodayInvoiceDate()),
+  paymentTerms: DEFAULT_PAYMENT_TERMS,
   purpose: "Donation to A.B.B.C. social projects",
   notes: "",
 };
@@ -139,6 +154,9 @@ const INTERNATIONAL_TEST_INVOICE_FORM: InternationalInvoiceFormState = {
   donorPhone: "+86 000000000",
   amount: "200000",
   currency: "USD",
+  issueDate: getTodayInvoiceDate(),
+  dueDate: getDefaultDueDate(getTodayInvoiceDate()),
+  paymentTerms: DEFAULT_PAYMENT_TERMS,
   purpose: "International donation to ABBC social projects",
   notes: "Generated test invoice for validation.",
 };
@@ -147,10 +165,47 @@ function formatCurrency(value: number, currency: InvoiceCurrency): string {
   return formatCurrencyAmount(value, currency);
 }
 
+function formatInvoiceDate(date: Date): string {
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(date);
+}
+
+function getTodayInvoiceDate() {
+  return formatInvoiceDate(new Date());
+}
+
+function parseInvoiceDate(value: string): Date | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+  if (isoMatch) {
+    const [, year, month, day] = isoMatch;
+    const date = new Date(Number(year), Number(month) - 1, Number(day));
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  const parsed = new Date(trimmed);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function getDefaultDueDate(issueDate: string) {
+  const parsedIssueDate = parseInvoiceDate(issueDate) ?? new Date();
+  const dueDate = new Date(parsedIssueDate);
+  dueDate.setDate(dueDate.getDate() + 30);
+  return formatInvoiceDate(dueDate);
+}
+
 function buildInvoicePaymentUrl(input: {
   invoiceNumber: string;
   amount: number;
   currency: InvoiceCurrency;
+  issueDate: string;
+  dueDate: string;
+  paymentTerms: string;
   donorName: string;
   donorCountry: string;
   purpose: string;
@@ -160,6 +215,9 @@ function buildInvoicePaymentUrl(input: {
   url.search = new URLSearchParams({
     amount: String(input.amount),
     currency: input.currency,
+    issueDate: input.issueDate,
+    dueDate: input.dueDate,
+    paymentTerms: input.paymentTerms,
     donorName: input.donorName,
     donorCountry: input.donorCountry,
     purpose: input.purpose,
@@ -385,9 +443,11 @@ async function createInternationalInvoicePdf(invoice: InternationalInvoicePdfInp
 
   ctx.fillStyle = "#f6f8f8";
   ctx.fillRect(70, 260, 1100, 142);
-  drawLabel("Invoice Number", invoice.invoiceNumber, 110, 308);
-  drawLabel("Issue Date", invoice.issueDate, 520, 308);
-  drawLabel("Status", invoice.status, 810, 308, 300);
+  drawLabel("Invoice Number", invoice.invoiceNumber, 110, 296, 330);
+  drawLabel("Issue Date", invoice.issueDate, 470, 296, 210);
+  drawLabel("Due Date", invoice.dueDate || getDefaultDueDate(invoice.issueDate), 690, 296, 190);
+  drawLabel("Payment Terms", invoice.paymentTerms || DEFAULT_PAYMENT_TERMS, 890, 296, 240);
+  drawLabel("Status", invoice.status, 110, 360, 300, 1);
 
   ctx.fillStyle = "#0e3f4b";
   ctx.font = "700 31px Arial";
@@ -564,7 +624,13 @@ export default function ABBC() {
     field: K,
     value: InternationalInvoiceFormState[K],
   ) {
-    setInternationalInvoiceForm((current) => ({ ...current, [field]: value }));
+    setInternationalInvoiceForm((current) => {
+      const next = { ...current, [field]: value };
+      if (field === "issueDate") {
+        next.dueDate = getDefaultDueDate(String(value));
+      }
+      return next;
+    });
     setInternationalInvoiceError(null);
   }
 
@@ -624,6 +690,9 @@ export default function ABBC() {
         invoiceNumber,
         amount,
         currency: form.currency,
+        issueDate: form.issueDate.trim(),
+        dueDate: form.dueDate.trim(),
+        paymentTerms: form.paymentTerms.trim() || DEFAULT_PAYMENT_TERMS,
         donorName: form.donorName.trim(),
         donorCountry: form.country.trim(),
         purpose: form.purpose.trim(),
@@ -631,7 +700,9 @@ export default function ABBC() {
       });
       const invoiceWithoutPdf = {
         invoiceNumber,
-        issueDate: new Date().toLocaleDateString("pt-BR"),
+        issueDate: form.issueDate.trim(),
+        dueDate: form.dueDate.trim(),
+        paymentTerms: form.paymentTerms.trim() || DEFAULT_PAYMENT_TERMS,
         donorName: form.donorName.trim(),
         donorDocumentType: form.donorDocumentType.trim(),
         donorDocumentNumber: form.donorDocumentNumber.trim(),
@@ -653,6 +724,9 @@ export default function ABBC() {
       const syncResult = await registerDonation({
         invoiceNumber: invoiceWithoutPdf.invoiceNumber,
         createdAt: invoiceWithoutPdf.createdAt,
+        issueDate: invoiceWithoutPdf.issueDate,
+        dueDate: invoiceWithoutPdf.dueDate,
+        paymentTerms: invoiceWithoutPdf.paymentTerms,
         donorName: invoiceWithoutPdf.donorName,
         donorDocumentType: invoiceWithoutPdf.donorDocumentType,
         donorDocumentNumber: invoiceWithoutPdf.donorDocumentNumber,
@@ -1159,6 +1233,36 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
                   </div>
                 </div>
 
+                <div className="international-terms-row">
+                  <label>
+                    <span>Issue Date</span>
+                    <input
+                      value={internationalInvoiceForm.issueDate}
+                      onChange={(event) => updateInternationalInvoiceField("issueDate", event.target.value)}
+                    />
+                  </label>
+
+                  <label>
+                    <span>Due Date</span>
+                    <input
+                      value={internationalInvoiceForm.dueDate}
+                      onChange={(event) => updateInternationalInvoiceField("dueDate", event.target.value)}
+                    />
+                  </label>
+
+                  <label>
+                    <span>Payment Terms</span>
+                    <select
+                      value={internationalInvoiceForm.paymentTerms}
+                      onChange={(event) => updateInternationalInvoiceField("paymentTerms", event.target.value)}
+                    >
+                      {PAYMENT_TERM_OPTIONS.map((term) => (
+                        <option value={term} key={term}>{term}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+
                 <label>
                   <span>Finalidade da doação</span>
                   <input
@@ -1479,6 +1583,7 @@ const CSS = `
 .abbc-page .international-form input:focus,.abbc-page .international-form select:focus,.abbc-page .international-form textarea:focus{border-color:#f3c373;box-shadow:0 0 0 3px rgba(243,195,115,.16);background:rgba(255,255,255,.11)}
 .abbc-page .international-document-row{display:grid;grid-template-columns:minmax(0,.76fr) minmax(0,1fr);gap:10px}
 .abbc-page .international-money-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(250px,.82fr);gap:10px;align-items:start}
+.abbc-page .international-terms-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
 .abbc-page .amount-input-wrap{display:flex;align-items:center;gap:9px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.08);border-radius:10px;padding:0 0 0 11px;transition:border-color .2s, box-shadow .2s, background .2s}
 .abbc-page .amount-input-wrap:focus-within{border-color:#f3c373;box-shadow:0 0 0 3px rgba(243,195,115,.16);background:rgba(255,255,255,.11)}
 .abbc-page .amount-input-wrap b{flex:none;color:#f3c373;font-weight:900;font-size:.86rem}
@@ -1605,6 +1710,7 @@ const CSS = `
   .abbc-page .international-modal-body{padding:16px;overflow-y:auto}
   .abbc-page .international-document-row{grid-template-columns:1fr}
   .abbc-page .international-money-row{grid-template-columns:1fr}
+  .abbc-page .international-terms-row{grid-template-columns:1fr}
   .abbc-page .foot-top{grid-template-columns:1fr}
   .abbc-page .pad{padding:60px 0}
   .abbc-page{font-size:16px}

@@ -5,6 +5,8 @@ export type InvoiceCurrency = CurrencyCode;
 export type StoredDonationInvoice = {
   invoiceNumber: string;
   issueDate: string;
+  dueDate?: string;
+  paymentTerms?: string;
   donorName: string;
   donorDocumentType: string;
   donorDocumentNumber: string;

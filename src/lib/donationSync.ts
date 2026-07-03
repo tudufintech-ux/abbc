@@ -3,6 +3,9 @@ import type { CurrencyCode } from "@/config/currencies";
 export type DonationPayload = {
   invoiceNumber: string;
   createdAt: string;
+  issueDate: string;
+  dueDate: string;
+  paymentTerms: string;
   donorName: string;
   donorDocumentType: string;
   donorDocumentNumber: string;
