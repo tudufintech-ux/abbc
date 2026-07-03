@@ -386,8 +386,70 @@ function drawWrappedText(
   return line ? currentY + lineHeight : currentY;
 }
 
+function wrapByWidth(ctx: CanvasRenderingContext2D, text: string, maxWidth: number) {
+  const lines: string[] = [];
+  let line = "";
+
+  for (const char of text) {
+    const testLine = `${line}${char}`;
+    if (ctx.measureText(testLine).width > maxWidth && line) {
+      lines.push(line);
+      line = char;
+    } else {
+      line = testLine;
+    }
+  }
+
+  if (line) lines.push(line);
+  return lines;
+}
+
+function drawUrlBlock(
+  ctx: CanvasRenderingContext2D,
+  label: string,
+  url: string,
+  x: number,
+  y: number,
+  maxWidth: number,
+  maxHeight: number,
+) {
+  ctx.fillStyle = "#6c8085";
+  ctx.font = "700 18px Arial";
+  ctx.fillText(label.toUpperCase(), x, y);
+
+  let fontSize = 16;
+  let lineHeight = 22;
+  let lines: string[] = [];
+
+  while (fontSize >= 11) {
+    ctx.font = `600 ${fontSize}px Arial`;
+    lineHeight = fontSize + 6;
+    lines = wrapByWidth(ctx, url, maxWidth);
+    if (lines.length * lineHeight <= maxHeight) break;
+    fontSize -= 1;
+  }
+
+  ctx.fillStyle = "#1b2c47";
+  ctx.font = `600 ${fontSize}px Arial`;
+  lines.forEach((line, index) => {
+    ctx.fillText(line, x, y + 32 + index * lineHeight);
+  });
+  return y + 32 + lines.length * lineHeight;
+}
+
+function decodePdfText(value?: string) {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed) return "";
+
+  try {
+    return decodeURIComponent(trimmed);
+  } catch {
+    return trimmed;
+  }
+}
+
 function pdfValue(value?: string) {
-  return value?.trim() || "Not provided";
+  return decodePdfText(value) || "Not provided";
 }
 
 async function createInternationalInvoicePdf(invoice: InternationalInvoicePdfInput) {
@@ -452,7 +514,7 @@ async function createInternationalInvoicePdf(invoice: InternationalInvoicePdfInp
   ctx.fillStyle = "#0e3f4b";
   ctx.font = "700 31px Arial";
   ctx.fillText("Donor Information", 70, 480);
-  drawLabel("Name", pdfValue(invoice.donorName), 70, 530, 500);
+  drawLabel("Donor / Company", pdfValue(invoice.donorName), 70, 530, 500);
   drawLabel("Document Type", pdfValue(invoice.donorDocumentType), 70, 630, 500);
   drawLabel("Document Number", pdfValue(invoice.donorDocumentNumber || invoice.donorTaxId), 70, 730, 500);
   drawLabel("Country", pdfValue(invoice.country), 70, 830, 500);
@@ -488,15 +550,11 @@ async function createInternationalInvoicePdf(invoice: InternationalInvoicePdfInp
   ctx.font = "700 31px Arial";
   ctx.fillText("Payment Options", 70, 1360);
   drawLabel("Wire Transfer (SWIFT)", "Use the bank details on the next page and keep the invoice number as payment reference.", 70, 1410, 690, 3);
-  drawLabel("Pay Online", payOnlineUrl, 70, 1510, 690, 2);
+  drawUrlBlock(ctx, "Pay Online", payOnlineUrl, 70, 1510, 800, 130);
   if (qrCodeImage) {
     ctx.fillStyle = "#f6f8f8";
     ctx.fillRect(910, 1358, 210, 210);
     ctx.drawImage(qrCodeImage, 930, 1378, 170, 170);
-  } else {
-    ctx.fillStyle = "#6c8085";
-    ctx.font = "700 18px Arial";
-    ctx.fillText("QR Code unavailable", 930, 1438);
   }
 
   ctx.fillStyle = "#6c8085";
