@@ -186,28 +186,44 @@ function concatBytes(parts: Uint8Array[]) {
   return output;
 }
 
-function makePdfFromJpeg(jpegDataUrl: string, width: number, height: number): Blob {
+function makePdfFromJpegs(pages: Array<{ jpegDataUrl: string; width: number; height: number }>): Blob {
   const encoder = new TextEncoder();
-  const imageBytes = dataUrlToBytes(jpegDataUrl);
-  const content = "q\n595 0 0 842 0 0 cm\n/Im0 Do\nQ\n";
-  const objects = [
+  const imageStreams = new Map<number, Uint8Array>();
+  const objects: string[] = [
     "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>",
-    `<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${imageBytes.length} >>\nstream\n`,
-    `<< /Length ${encoder.encode(content).length} >>\nstream\n${content}endstream`,
+    "",
   ];
+  const kids: string[] = [];
+
+  pages.forEach((page, index) => {
+    const pageObjectNumber = 3 + index * 3;
+    const imageObjectNumber = pageObjectNumber + 1;
+    const contentObjectNumber = pageObjectNumber + 2;
+    const imageBytes = dataUrlToBytes(page.jpegDataUrl);
+    const content = "q\n595 0 0 842 0 0 cm\n/Im0 Do\nQ\n";
+
+    kids.push(`${pageObjectNumber} 0 R`);
+    objects.push(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /XObject << /Im0 ${imageObjectNumber} 0 R >> >> /Contents ${contentObjectNumber} 0 R >>`,
+      `<< /Type /XObject /Subtype /Image /Width ${page.width} /Height ${page.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${imageBytes.length} >>\nstream\n`,
+      `<< /Length ${encoder.encode(content).length} >>\nstream\n${content}endstream`,
+    );
+    imageStreams.set(imageObjectNumber, imageBytes);
+  });
+  objects[1] = `<< /Type /Pages /Kids [${kids.join(" ")}] /Count ${pages.length} >>`;
 
   const parts: Uint8Array[] = [encoder.encode("%PDF-1.4\n")];
   const offsets: number[] = [0];
   let length = parts[0].length;
 
   for (let index = 0; index < objects.length; index++) {
+    const objectNumber = index + 1;
     offsets.push(length);
-    const objectStart = encoder.encode(`${index + 1} 0 obj\n${objects[index]}`);
+    const objectStart = encoder.encode(`${objectNumber} 0 obj\n${objects[index]}`);
     parts.push(objectStart);
     length += objectStart.length;
-    if (index === 3) {
+    const imageBytes = imageStreams.get(objectNumber);
+    if (imageBytes) {
       parts.push(imageBytes, encoder.encode("\nendstream\nendobj\n"));
       length += imageBytes.length + encoder.encode("\nendstream\nendobj\n").length;
     } else {
@@ -266,14 +282,21 @@ function drawWrappedText(
   y: number,
   maxWidth: number,
   lineHeight: number,
+  maxLines = Number.POSITIVE_INFINITY,
 ) {
-  const words = text.split(" ");
+  const words = text.split(/\s+/).filter(Boolean);
   let line = "";
   let currentY = y;
+  let lines = 0;
   for (const word of words) {
     const testLine = line ? `${line} ${word}` : word;
     if (ctx.measureText(testLine).width > maxWidth && line) {
+      if (lines + 1 >= maxLines) {
+        ctx.fillText(`${line.replace(/[.,;:]?$/, "")}...`, x, currentY);
+        return currentY + lineHeight;
+      }
       ctx.fillText(line, x, currentY);
+      lines += 1;
       line = word;
       currentY += lineHeight;
     } else {
@@ -281,6 +304,7 @@ function drawWrappedText(
     }
   }
   if (line) ctx.fillText(line, x, currentY);
+  return line ? currentY + lineHeight : currentY;
 }
 
 function pdfValue(value?: string) {
@@ -288,16 +312,24 @@ function pdfValue(value?: string) {
 }
 
 async function createInternationalInvoicePdf(invoice: InternationalInvoicePdfInput) {
-  const canvas = document.createElement("canvas");
-  canvas.width = 1240;
-  canvas.height = 1754;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Não foi possível gerar o PDF.");
+  const createPage = () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1240;
+    canvas.height = 1754;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Não foi possível gerar o PDF.");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    return { canvas, ctx };
+  };
 
+  const payOnlineUrl = `https://abbc-dw0f.onrender.com/pay/${encodeURIComponent(invoice.invoiceNumber)}`;
   const [logoImage, qrCodeImage] = await Promise.all([
     loadImageSafe(LOGO),
-    createQrCodeImage(invoice.paymentUrl),
+    createQrCodeImage(payOnlineUrl),
   ]);
+  const pageOne = createPage();
+  const { canvas, ctx } = pageOne;
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = "#0e3f4b";
@@ -321,13 +353,13 @@ async function createInternationalInvoicePdf(invoice: InternationalInvoicePdfInp
   ctx.font = "700 24px Arial";
   ctx.fillText(invoice.invoiceNumber, 880, 132);
 
-  const drawLabel = (label: string, value: string, x: number, y: number, width = 430) => {
+  const drawLabel = (label: string, value: string, x: number, y: number, width = 430, maxLines = 3) => {
     ctx.fillStyle = "#6c8085";
     ctx.font = "700 18px Arial";
     ctx.fillText(label.toUpperCase(), x, y);
     ctx.fillStyle = "#1b2c47";
     ctx.font = "500 25px Arial";
-    drawWrappedText(ctx, value || "Not provided", x, y + 34, width, 31);
+    return drawWrappedText(ctx, value || "Not provided", x, y + 34, width, 31, maxLines);
   };
 
   ctx.fillStyle = "#f6f8f8";
@@ -346,11 +378,11 @@ async function createInternationalInvoicePdf(invoice: InternationalInvoicePdfInp
 
   ctx.fillStyle = "#0e3f4b";
   ctx.font = "700 31px Arial";
-  ctx.fillText("Beneficiary: ABBC", 660, 480);
+  ctx.fillText("Beneficiary", 660, 480);
   drawLabel("Beneficiary", ABBC_PUBLIC_DETAILS.beneficiaryName, 660, 530, 450);
   drawLabel("CNPJ", ABBC_PUBLIC_DETAILS.beneficiaryCnpj, 660, 660, 450);
   drawLabel("Headquarters", "Rua Aragão, 58 - Vila Mazzei - São Paulo / SP", 660, 760, 450);
-  drawLabel("E-mail / WhatsApp", `${pdfValue(invoice.donorEmail)} / ${pdfValue(invoice.donorPhone)}`, 660, 860, 450);
+  drawLabel("E-mail / WhatsApp", "+55 11 92181-3353", 660, 860, 450);
 
   ctx.fillStyle = "#e0992e";
   ctx.fillRect(70, 960, 1100, 150);
@@ -369,49 +401,96 @@ async function createInternationalInvoicePdf(invoice: InternationalInvoicePdfInp
   ctx.fillText("Donation Purpose", 70, 1200);
   ctx.fillStyle = "#1b2c47";
   ctx.font = "500 25px Arial";
-  drawWrappedText(ctx, invoice.purpose, 70, 1244, 1060, 34);
+  drawWrappedText(ctx, invoice.purpose, 70, 1244, 1060, 34, 3);
 
   ctx.fillStyle = "#0e3f4b";
   ctx.font = "700 31px Arial";
   ctx.fillText("Payment Options", 70, 1360);
-  drawLabel("Wire Transfer (SWIFT)", "Use the bank details below and keep the invoice number as payment reference.", 70, 1410, 670);
-  drawLabel("Pay Online", invoice.paymentUrl, 70, 1490, 670);
+  drawLabel("Wire Transfer (SWIFT)", "Use the bank details on the next page and keep the invoice number as payment reference.", 70, 1410, 690, 3);
+  drawLabel("Pay Online", payOnlineUrl, 70, 1510, 690, 2);
   if (qrCodeImage) {
-    ctx.drawImage(qrCodeImage, 930, 1366, 170, 170);
+    ctx.fillStyle = "#f6f8f8";
+    ctx.fillRect(910, 1358, 210, 210);
+    ctx.drawImage(qrCodeImage, 930, 1378, 170, 170);
   } else {
     ctx.fillStyle = "#6c8085";
     ctx.font = "700 18px Arial";
-    ctx.fillText("QR CODE UNAVAILABLE", 930, 1410);
-    ctx.fillStyle = "#1b2c47";
-    ctx.font = "500 18px Arial";
-    drawWrappedText(ctx, invoice.paymentUrl, 930, 1444, 190, 24);
+    ctx.fillText("QR Code unavailable", 930, 1438);
   }
 
-  ctx.fillStyle = "#0e3f4b";
-  ctx.font = "700 26px Arial";
-  ctx.fillText("Wire Transfer Instructions", 70, 1536);
-  ctx.fillStyle = "#1b2c47";
-  ctx.font = "500 20px Arial";
+  ctx.fillStyle = "#6c8085";
+  ctx.font = "400 18px Arial";
+  ctx.fillText(`Page 1 of 2 · ${invoice.invoiceNumber}`, 70, 1690);
+
+  const pageTwo = createPage();
+  const ctx2 = pageTwo.ctx;
+  ctx2.fillStyle = "#0e3f4b";
+  ctx2.fillRect(0, 0, pageTwo.canvas.width, 150);
+  if (logoImage) {
+    ctx2.drawImage(logoImage, 70, 28, 86, 92);
+  }
+  ctx2.fillStyle = "#ffffff";
+  ctx2.font = "700 36px Arial";
+  ctx2.fillText("A.B.B.C", 180, 70);
+  ctx2.font = "700 24px Arial";
+  ctx2.fillText(invoice.invoiceNumber, 180, 106);
+  ctx2.font = "700 42px Arial";
+  ctx2.fillText("Wire Transfer Instructions", 70, 245);
+
+  const drawInstruction = (label: string, value: string, x: number, y: number, width = 920) => {
+    ctx2.fillStyle = "#6c8085";
+    ctx2.font = "700 18px Arial";
+    ctx2.fillText(`${label}:`, x, y);
+    ctx2.fillStyle = "#1b2c47";
+    ctx2.font = "600 25px Arial";
+    return drawWrappedText(ctx2, value, x, y + 34, width, 31, 3) + 12;
+  };
+
+  let y = 315;
   [
-    ...getBankDetailsLines(invoice.invoiceNumber),
-  ].forEach((line, index) => {
-    ctx.font = "500 17px Arial";
-    drawWrappedText(ctx, line, 70 + (index % 2) * 565, 1578 + Math.floor(index / 2) * 32, 520, 21);
+    ["Beneficiary Name", ABBC_PUBLIC_DETAILS.beneficiaryName],
+    ["Beneficiary CNPJ", ABBC_PUBLIC_DETAILS.beneficiaryCnpj],
+    ["Bank", ABBC_PUBLIC_DETAILS.bankName],
+    ["Bank Code", ABBC_PUBLIC_DETAILS.bankCode],
+    ["Agency", ABBC_PUBLIC_DETAILS.bankAgency],
+    ["Account", ABBC_PUBLIC_DETAILS.bankAccount],
+    ["IBAN", ABBC_PUBLIC_DETAILS.iban],
+    ["SWIFT/BIC", ABBC_PUBLIC_DETAILS.swiftBic],
+    ["Bank Address", ABBC_PUBLIC_DETAILS.bankAddress],
+    ["Correspondent Bank", ABBC_PUBLIC_DETAILS.correspondentBank],
+    ["Payment Reference", invoice.invoiceNumber],
+  ].forEach(([label, value]) => {
+    y = drawInstruction(label, value, 90, y);
   });
 
-  ctx.fillStyle = "#6c8085";
-  ctx.font = "400 20px Arial";
-  drawWrappedText(
-    ctx,
-    `Status: ${invoice.status}. Reference: ${invoice.invoiceNumber}. ${invoice.notes ? `Notes: ${invoice.notes}` : ""}`,
-    70,
-    1722,
-    1060,
-    24,
-  );
+  ctx2.fillStyle = "#0e3f4b";
+  ctx2.font = "700 30px Arial";
+  ctx2.fillText("Notes", 70, 1364);
+  ctx2.fillStyle = "#1b2c47";
+  ctx2.font = "500 22px Arial";
+  drawWrappedText(ctx2, invoice.notes || "No additional notes.", 70, 1408, 1060, 30, 5);
 
-  const jpeg = canvas.toDataURL("image/jpeg", 0.92);
-  return makePdfFromJpeg(jpeg, canvas.width, canvas.height);
+  ctx2.fillStyle = "#f6f8f8";
+  ctx2.fillRect(70, 1588, 1100, 94);
+  ctx2.fillStyle = "#0e3f4b";
+  ctx2.font = "700 21px Arial";
+  drawWrappedText(
+    ctx2,
+    "Please use the invoice number as payment reference and send the wire transfer receipt to ABBC after payment.",
+    100,
+    1632,
+    1040,
+    28,
+    2,
+  );
+  ctx2.fillStyle = "#6c8085";
+  ctx2.font = "400 18px Arial";
+  ctx2.fillText(`Page 2 of 2 · A.B.B.C · Associação Brasileira de Benefício à Comunidade`, 70, 1716);
+
+  return makePdfFromJpegs([
+    { jpegDataUrl: canvas.toDataURL("image/jpeg", 0.92), width: canvas.width, height: canvas.height },
+    { jpegDataUrl: pageTwo.canvas.toDataURL("image/jpeg", 0.92), width: pageTwo.canvas.width, height: pageTwo.canvas.height },
+  ]);
 }
 
 /* ------------------------------------------------------------------ */
