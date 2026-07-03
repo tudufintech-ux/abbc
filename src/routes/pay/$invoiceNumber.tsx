@@ -87,10 +87,12 @@ function createInvoiceFromQueryParams(invoiceNumber: string): PayInvoiceData | n
 function PayInvoicePage() {
   const { invoiceNumber } = Route.useParams();
   const [invoice, setInvoice] = useState<PayInvoiceData | null>(null);
+  const [isInitialized, setIsInitialized] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
 
   useEffect(() => {
     setInvoice(getStoredInvoice(invoiceNumber) ?? createInvoiceFromQueryParams(invoiceNumber));
+    setIsInitialized(true);
   }, [invoiceNumber]);
 
   const hasCompletePaymentInfo = Boolean(
@@ -111,6 +113,23 @@ function PayInvoicePage() {
       window.setTimeout(() => setCopied((current) => (current === id ? null : current)), 1600);
     };
     navigator.clipboard?.writeText(text).then(done).catch(done);
+  }
+
+  if (!isInitialized) {
+    return (
+      <main className="pay-page">
+        <style>{PAY_CSS}</style>
+        <header className="pay-header">
+          <a href="/" className="pay-brand">A.B.B.C</a>
+          <span>Benefício à Comunidade</span>
+        </header>
+        <section className="pay-shell">
+          <article className="invoice-card empty-state">
+            <p>Loading invoice...</p>
+          </article>
+        </section>
+      </main>
+    );
   }
 
   if (!invoice) {
@@ -165,7 +184,7 @@ function PayInvoicePage() {
 
             {!hasCompletePaymentInfo ? (
               <section className="payment-box">
-                <p className="error">Payment information is incomplete. Please request a new payment link from ABBC.</p>
+                <p className="error">Invoice information is incomplete. Please request a new payment link from ABBC.</p>
               </section>
             ) : null}
 
