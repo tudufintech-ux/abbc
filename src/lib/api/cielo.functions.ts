@@ -1,33 +1,28 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
-const cieloPaymentInputSchema = z.object({
+const cardPaymentInputSchema = z.object({
   amount: z.number().positive(),
-  method: z.enum(["link", "credit", "debit"]),
+  method: z.enum(["credit", "debit"]),
+  paymentToken: z.string().min(1),
+  brand: z.string().min(1),
+  installments: z.number().int().positive().optional(),
   donorName: z.string().optional(),
   donorEmail: z.string().email().optional().or(z.literal("")),
   donorPhone: z.string().optional(),
-  invoiceNumber: z.string().optional(),
 });
 
-type CieloPaymentResponse = {
-  paymentUrl?: unknown;
-  PaymentUrl?: unknown;
-  checkoutUrl?: unknown;
-  CheckoutUrl?: unknown;
-  Url?: unknown;
-  url?: unknown;
-  settings?: {
-    checkoutUrl?: unknown;
-    CheckoutUrl?: unknown;
-  };
-  links?: Array<{
-    href?: unknown;
-    rel?: unknown;
-  }>;
-};
-
 type ServerEnv = Record<string, string | undefined>;
+
+type CieloSaleResponse = {
+  Payment?: {
+    PaymentId?: string;
+    Status?: number;
+    ReturnCode?: string;
+    ReturnMessage?: string;
+    AuthorizationCode?: string;
+  };
+};
 
 function getRequiredEnv(env: ServerEnv, name: string) {
   const value = env[name]?.trim();
@@ -37,65 +32,81 @@ function getRequiredEnv(env: ServerEnv, name: string) {
   return value;
 }
 
-function getSiteUrl(env: ServerEnv) {
-  return (env.SITE_URL?.trim() || "https://associacaoabbc.com.br").replace(/\/$/, "");
+function getOptionalEnv(env: ServerEnv, name: string) {
+  return env[name]?.trim() || "";
 }
 
-function getCieloCheckoutEndpoint(env: ServerEnv) {
+function getCieloSalesEndpoint(env: ServerEnv) {
   const cieloEnv = env.CIELO_ENV?.trim().toLowerCase() || "production";
   if (cieloEnv === "sandbox") {
-    return "https://cieloecommerce.cielo.com.br/api/public/v1/orders/";
+    return "https://apisandbox.cieloecommerce.cielo.com.br/1/sales/";
   }
-  return "https://cieloecommerce.cielo.com.br/api/public/v1/orders/";
+  return "https://api.cieloecommerce.cielo.com.br/1/sales/";
 }
 
 function toCents(amount: number) {
   return Math.round(amount * 100);
 }
 
-function getMethodLabel(method: "link" | "credit" | "debit") {
-  if (method === "credit") return "Cartão de crédito";
-  if (method === "debit") return "Cartão de débito";
-  return "Link de pagamento";
+function getPaymentStatus(payment: CieloSaleResponse["Payment"]) {
+  return typeof payment?.Status === "number" ? payment.Status : 0;
 }
 
-function asPaymentUrl(response: CieloPaymentResponse) {
-  const candidates = [
-    response.paymentUrl,
-    response.PaymentUrl,
-    response.checkoutUrl,
-    response.CheckoutUrl,
-    response.Url,
-    response.url,
-    response.settings?.checkoutUrl,
-    response.settings?.CheckoutUrl,
-    ...(response.links ?? []).map((link) => link.href),
-  ];
-
-  const paymentUrl = candidates.find(
-    (candidate) => typeof candidate === "string" && /^https?:\/\//i.test(candidate),
-  );
-
-  return typeof paymentUrl === "string" ? paymentUrl : "";
+function isApprovedStatus(status: number) {
+  return status === 1 || status === 2;
 }
 
-export const createCieloPaymentRedirect = createServerFn({ method: "POST" })
-  .validator(cieloPaymentInputSchema)
+export const getCieloCardClientConfig = createServerFn({ method: "GET" })
+  .handler(async () => {
+    const processModule = await import("node:process");
+    const env = processModule.default.env;
+
+    return {
+      sopClientId: getOptionalEnv(env, "CIELO_SOP_CLIENT_ID"),
+      threeDsClientId: getOptionalEnv(env, "CIELO_3DS_CLIENT_ID"),
+      env: env.CIELO_ENV?.trim().toLowerCase() === "sandbox" ? "sandbox" : "production",
+    };
+  });
+
+export const authorizeCieloCardPayment = createServerFn({ method: "POST" })
+  .validator(cardPaymentInputSchema)
   .handler(async ({ data }) => {
     const processModule = await import("node:process");
     const env = processModule.default.env;
     const merchantId = getRequiredEnv(env, "CIELO_MERCHANT_ID");
     const merchantKey = getRequiredEnv(env, "CIELO_MERCHANT_KEY");
-    const siteUrl = getSiteUrl(env);
     const amountInCents = toCents(data.amount);
     const merchantOrderId = `ABBC${Date.now()}`;
-    const methodLabel = getMethodLabel(data.method);
+    const installments = data.method === "credit" ? data.installments || 1 : undefined;
 
     if (!Number.isFinite(amountInCents) || amountInCents <= 0) {
       throw new Error("Informe um valor válido para o pagamento.");
     }
 
-    const response = await fetch(getCieloCheckoutEndpoint(env), {
+    const payment = data.method === "credit"
+      ? {
+          Type: "CreditCard",
+          Amount: amountInCents,
+          Installments: installments,
+          Capture: true,
+          SoftDescriptor: "ABBC",
+          CreditCard: {
+            PaymentToken: data.paymentToken,
+            Brand: data.brand,
+          },
+        }
+      : {
+          Type: "DebitCard",
+          Amount: amountInCents,
+          Capture: true,
+          SoftDescriptor: "ABBC",
+          DebitCard: {
+            PaymentToken: data.paymentToken,
+            Brand: data.brand,
+          },
+        };
+
+    const response = await fetch(getCieloSalesEndpoint(env), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -104,64 +115,39 @@ export const createCieloPaymentRedirect = createServerFn({ method: "POST" })
       },
       body: JSON.stringify({
         MerchantOrderId: merchantOrderId,
-        OrderNumber: merchantOrderId,
-        SoftDescriptor: "ABBC",
         Customer: {
           Name: data.donorName?.trim() || "Doador ABBC",
           Email: data.donorEmail?.trim() || undefined,
           Phone: data.donorPhone?.trim() || undefined,
         },
-        Cart: {
-          Items: [
-            {
-              Name: `Doação ABBC - ${methodLabel}`,
-              Description: data.invoiceNumber
-                ? `Doação vinculada ao invoice ${data.invoiceNumber}`
-                : "Doação para projetos sociais da ABBC",
-              UnitPrice: amountInCents,
-              Quantity: 1,
-              Type: "Asset",
-            },
-          ],
-        },
-        Shipping: {
-          Type: "WithoutShipping",
-        },
-        Payment: {
-          Amount: amountInCents,
-          Currency: "BRL",
-          Method: data.method,
-        },
-        Options: {
-          ReturnUrl: `${siteUrl}/obrigado`,
-          CancelUrl: `${siteUrl}/pagamento-cancelado`,
-        },
+        Payment: payment,
       }),
     });
 
     const responseText = await response.text();
-    let responseBody: CieloPaymentResponse = {};
+    let responseBody: CieloSaleResponse = {};
     if (responseText) {
       try {
-        responseBody = JSON.parse(responseText) as CieloPaymentResponse;
+        responseBody = JSON.parse(responseText) as CieloSaleResponse;
       } catch {
         responseBody = {};
       }
     }
 
     if (!response.ok) {
-      console.error("[CIELO][status]", response.status);
-      console.error("[CIELO][body]", responseBody);
-      throw new Error("A Cielo recusou a criação do pagamento. Verifique as credenciais e tente novamente.");
+      console.error("[CIELO][authorize status]", response.status);
+      console.error("[CIELO][authorize body]", responseBody);
     }
 
-    const paymentUrl = asPaymentUrl(responseBody);
-    if (!paymentUrl) {
-      throw new Error("A Cielo não retornou uma URL de pagamento.");
-    }
+    const paymentResponse = responseBody.Payment;
+    const status = getPaymentStatus(paymentResponse);
+    const message = paymentResponse?.ReturnMessage || (response.ok ? "Pagamento processado." : "Pagamento recusado pela Cielo.");
 
     return {
-      paymentUrl,
-      merchantOrderId,
+      approved: response.ok && isApprovedStatus(status),
+      status,
+      paymentId: paymentResponse?.PaymentId || "",
+      authorizationCode: paymentResponse?.AuthorizationCode || "",
+      message,
     };
   });

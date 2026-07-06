@@ -20,7 +20,10 @@ import {
   type StoredDonationInvoice,
 } from "@/lib/invoiceStorage";
 import { registerDonation } from "@/lib/donationSync";
-import { createCieloPaymentRedirect } from "@/lib/api/cielo.functions";
+import {
+  authorizeCieloCardPayment,
+  getCieloCardClientConfig,
+} from "@/lib/api/cielo.functions";
 
 /* ------------------------------------------------------------------ */
 /*  Assets (logos embutidos como data URI — página 100% autônoma)     */
@@ -79,18 +82,31 @@ const PAYMENT_TERM_OPTIONS = [
   "Custom",
 ] as const;
 const PAYMENT_METHODS = ["Invoice", "Pix", "TED", "DOC", "Link de Pagamento", "Crédito", "Débito"] as const;
+const CIELO_PAYMENT_URL = import.meta.env.VITE_CIELO_PAYMENT_URL?.trim() ?? "";
+const CARD_BRANDS = ["Visa", "Master", "Amex", "Elo", "Hipercard", "Diners", "Discover", "JCB", "Aura"] as const;
 const WHATSAPP_RECEIPT_URL = "https://wa.me/5511921813353?text=" + encodeURIComponent(
   "Olá, A.B.B.C. Estou enviando o comprovante da minha doação.",
 );
 
 type PaymentMethod = (typeof PAYMENT_METHODS)[number];
-type CieloPaymentMethod = "link" | "credit" | "debit";
-type CieloPaymentState = "idle" | "loading" | "redirecting";
+type CieloPaymentMethod = "credit" | "debit";
+type CardPaymentState = "idle" | "tokenizing" | "authorizing" | "approved" | "declined" | "error";
+type CieloCardClientConfig = {
+  sopClientId: string;
+  threeDsClientId: string;
+  env: "production" | "sandbox";
+};
 type CieloPaymentFormState = {
   amount: string;
   donorName: string;
   donorEmail: string;
   donorPhone: string;
+  cardHolder: string;
+  cardNumber: string;
+  cardExpiration: string;
+  cardCvv: string;
+  brand: string;
+  installments: string;
 };
 
 const INITIAL_CIELO_PAYMENT_FORM: CieloPaymentFormState = {
@@ -98,7 +114,62 @@ const INITIAL_CIELO_PAYMENT_FORM: CieloPaymentFormState = {
   donorName: "",
   donorEmail: "",
   donorPhone: "",
+  cardHolder: "",
+  cardNumber: "",
+  cardExpiration: "",
+  cardCvv: "",
+  brand: "",
+  installments: "1",
 };
+
+type CieloTokenResponse = {
+  PaymentToken?: unknown;
+  paymentToken?: unknown;
+  CardToken?: unknown;
+  cardToken?: unknown;
+  Token?: unknown;
+  token?: unknown;
+};
+
+function onlyDigits(value: string) {
+  return value.replace(/\D/g, "");
+}
+
+function formatCardNumber(value: string) {
+  return onlyDigits(value).slice(0, 19).replace(/(\d{4})(?=\d)/g, "$1 ");
+}
+
+function formatCardExpiration(value: string) {
+  const digits = onlyDigits(value).slice(0, 4);
+  if (digits.length <= 2) return digits;
+  return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+}
+
+function parseCardExpiration(value: string) {
+  const [month = "", year = ""] = value.split("/");
+  return {
+    month: month.padStart(2, "0"),
+    year: year.length === 2 ? `20${year}` : year,
+  };
+}
+
+function getCieloPublicCardEndpoint(env: "production" | "sandbox") {
+  if (env === "sandbox") {
+    return "https://apisandbox.cieloecommerce.cielo.com.br/1/card/";
+  }
+  return "https://api.cieloecommerce.cielo.com.br/1/card/";
+}
+
+function getTokenFromCieloResponse(response: CieloTokenResponse) {
+  const token = response.PaymentToken
+    ?? response.paymentToken
+    ?? response.CardToken
+    ?? response.cardToken
+    ?? response.Token
+    ?? response.token;
+
+  return typeof token === "string" ? token : "";
+}
 
 function getBankDetailsLines(paymentReference?: string, includeInternational = true) {
   return [
@@ -680,8 +751,11 @@ export default function ABBC() {
   const [isInternationalInvoiceGenerating, setIsInternationalInvoiceGenerating] = useState(false);
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<PaymentMethod>("Invoice");
   const [cieloPaymentForm, setCieloPaymentForm] = useState<CieloPaymentFormState>(INITIAL_CIELO_PAYMENT_FORM);
-  const [cieloPaymentState, setCieloPaymentState] = useState<CieloPaymentState>("idle");
+  const [cardPaymentState, setCardPaymentState] = useState<CardPaymentState>("idle");
   const [cieloPaymentError, setCieloPaymentError] = useState<string | null>(null);
+  const [cardPaymentMessage, setCardPaymentMessage] = useState<string | null>(null);
+  const [cieloClientConfig, setCieloClientConfig] = useState<CieloCardClientConfig | null>(null);
+  const [isCieloClientConfigLoading, setIsCieloClientConfigLoading] = useState(false);
 
   const selectedInternationalCurrency = getCurrencyConfig(internationalInvoiceForm.currency);
   const filteredCurrencies = useMemo(() => {
@@ -750,8 +824,18 @@ export default function ABBC() {
     field: K,
     value: CieloPaymentFormState[K],
   ) {
-    setCieloPaymentForm((current) => ({ ...current, [field]: value }));
+    const nextValue =
+      field === "cardNumber"
+        ? formatCardNumber(String(value))
+        : field === "cardExpiration"
+          ? formatCardExpiration(String(value))
+          : field === "cardCvv"
+            ? onlyDigits(String(value)).slice(0, 4)
+            : value;
+    setCieloPaymentForm((current) => ({ ...current, [field]: nextValue }));
     setCieloPaymentError(null);
+    setCardPaymentMessage(null);
+    if (cardPaymentState !== "idle") setCardPaymentState("idle");
   }
 
   function handleCieloAmountBlur() {
@@ -760,37 +844,117 @@ export default function ABBC() {
     updateCieloPaymentField("amount", formatCurrencyAmount(amount, "BRL"));
   }
 
-  async function handleCreateCieloPayment(method: CieloPaymentMethod) {
+  async function loadCieloClientConfig() {
+    if (cieloClientConfig) return cieloClientConfig;
+
+    setIsCieloClientConfigLoading(true);
+    try {
+      const config = await getCieloCardClientConfig();
+      setCieloClientConfig(config);
+      return config;
+    } finally {
+      setIsCieloClientConfigLoading(false);
+    }
+  }
+
+  function getRequiredCardPaymentError(method: CieloPaymentMethod, amount: number) {
+    if (!Number.isFinite(amount) || amount <= 0) return "Informe um valor maior que zero para gerar o pagamento.";
+    if (!cieloPaymentForm.donorName.trim()) return "Informe o nome do doador.";
+    if (!cieloPaymentForm.cardHolder.trim()) return "Informe o nome impresso no cartão.";
+    if (onlyDigits(cieloPaymentForm.cardNumber).length < 13) return "Informe um número de cartão válido.";
+    if (!/^\d{2}\/\d{2}$/.test(cieloPaymentForm.cardExpiration)) return "Informe a validade no formato MM/AA.";
+    if (onlyDigits(cieloPaymentForm.cardCvv).length < 3) return "Informe o CVV.";
+    if (!cieloPaymentForm.brand.trim()) return "Informe a bandeira do cartão.";
+    if (method === "credit" && Number(cieloPaymentForm.installments) < 1) return "Informe a quantidade de parcelas.";
+    return null;
+  }
+
+  async function tokenizeCieloCard(config: CieloCardClientConfig) {
+    const { month, year } = parseCardExpiration(cieloPaymentForm.cardExpiration);
+    const response = await fetch(getCieloPublicCardEndpoint(config.env), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ClientId: config.sopClientId,
+      },
+      body: JSON.stringify({
+        ClientId: config.sopClientId,
+        ThreeDSClientId: config.threeDsClientId || undefined,
+        CardNumber: onlyDigits(cieloPaymentForm.cardNumber),
+        Holder: cieloPaymentForm.cardHolder.trim(),
+        ExpirationDate: `${month}/${year}`,
+        SecurityCode: onlyDigits(cieloPaymentForm.cardCvv),
+        Brand: cieloPaymentForm.brand,
+      }),
+    });
+
+    const responseText = await response.text();
+    let responseBody: CieloTokenResponse = {};
+    if (responseText) {
+      try {
+        responseBody = JSON.parse(responseText) as CieloTokenResponse;
+      } catch {
+        responseBody = {};
+      }
+    }
+
+    if (!response.ok) {
+      throw new Error("Não foi possível tokenizar o cartão na Cielo.");
+    }
+
+    const paymentToken = getTokenFromCieloResponse(responseBody);
+    if (!paymentToken) {
+      throw new Error("A Cielo não retornou o token do cartão.");
+    }
+
+    return paymentToken;
+  }
+
+  async function handleAuthorizeCardPayment(method: CieloPaymentMethod) {
     const amount = parseDecimalAmount(cieloPaymentForm.amount);
-    if (!Number.isFinite(amount) || amount <= 0) {
-      setCieloPaymentError("Informe um valor maior que zero para gerar o pagamento.");
+    const validationError = getRequiredCardPaymentError(method, amount);
+    if (validationError) {
+      setCieloPaymentError(validationError);
       return;
     }
 
-    setCieloPaymentState("loading");
     setCieloPaymentError(null);
+    setCardPaymentMessage(null);
 
     try {
-      const result = await createCieloPaymentRedirect({
+      const config = await loadCieloClientConfig();
+      if (!config.sopClientId) {
+        setCardPaymentState("error");
+        setCieloPaymentError("Pagamento com cartão em ativação pela Cielo. Use Pix, TED, DOC ou Invoice por enquanto.");
+        return;
+      }
+
+      setCardPaymentState("tokenizing");
+      const paymentToken = await tokenizeCieloCard(config);
+
+      setCardPaymentState("authorizing");
+      const result = await authorizeCieloCardPayment({
         data: {
           amount,
           method,
+          paymentToken,
+          brand: cieloPaymentForm.brand,
+          installments: method === "credit" ? Number(cieloPaymentForm.installments) || 1 : undefined,
           donorName: cieloPaymentForm.donorName.trim() || undefined,
           donorEmail: cieloPaymentForm.donorEmail.trim() || undefined,
           donorPhone: cieloPaymentForm.donorPhone.trim() || undefined,
-          invoiceNumber: internationalInvoice?.invoiceNumber,
         },
       });
 
-      setCieloPaymentState("redirecting");
-      window.location.href = result.paymentUrl;
+      setCardPaymentState(result.approved ? "approved" : "declined");
+      setCardPaymentMessage(result.message || (result.approved ? "Pagamento aprovado." : "Pagamento não aprovado."));
     } catch (error) {
-      console.error("[Cielo Payment Redirect Error]", error);
-      setCieloPaymentState("idle");
+      console.error("[Cielo Card Payment Error]", error);
+      setCardPaymentState("error");
       setCieloPaymentError(
         error instanceof Error
           ? error.message
-          : "Não foi possível iniciar o pagamento. Tente novamente em instantes.",
+          : "Não foi possível processar o cartão. Tente novamente em instantes.",
       );
     }
   }
@@ -951,11 +1115,19 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
   }, [internationalInvoice?.pdfUrl]);
 
   useEffect(() => {
+    if (selectedPaymentMethod !== "Crédito" && selectedPaymentMethod !== "Débito") return;
+    void loadCieloClientConfig().catch((error) => {
+      console.error("[Cielo Client Config Error]", error);
+      setCieloPaymentError("Pagamento com cartão em ativação pela Cielo. Use Pix, TED, DOC ou Invoice por enquanto.");
+    });
+  }, [selectedPaymentMethod]);
+
+  useEffect(() => {
     // Fontes Google
     const link = document.createElement("link");
     link.rel = "stylesheet";
     link.href =
-      "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Mulish:wght@400;500;600;700;800&display=swap";
+      "https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800;900&display=swap";
     document.head.appendChild(link);
 
     // Sombra da navbar ao rolar
@@ -1006,26 +1178,46 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
     </div>
   );
 
-  const CieloPaymentPanel = ({
+  const LinkPaymentPanel = () => (
+    <div className="cielo-panel">
+      <p className="secure-note">
+        <AlertCircle size={16} />
+        Link de pagamento manual configurável por URL pública. Para cartão no site, use Crédito ou Débito.
+      </p>
+      {CIELO_PAYMENT_URL ? (
+        <a className="btn btn-gold pay-link" href={CIELO_PAYMENT_URL} target="_blank" rel="noopener noreferrer">
+          <ExternalLink size={18} /> Abrir link de pagamento
+        </a>
+      ) : (
+        <p className="donation-error">Link de pagamento em ativação. Use Pix, TED, DOC ou Invoice por enquanto.</p>
+      )}
+    </div>
+  );
+
+  const CardPaymentPanel = ({
     method,
     buttonLabel,
   }: {
     method: CieloPaymentMethod;
     buttonLabel: string;
   }) => {
-    const isBusy = cieloPaymentState !== "idle";
-    const currentLabel = cieloPaymentState === "redirecting"
-      ? "Redirecionando..."
-      : cieloPaymentState === "loading"
-        ? "Gerando pagamento..."
+    const isBusy = cardPaymentState === "tokenizing" || cardPaymentState === "authorizing";
+    const currentLabel = cardPaymentState === "tokenizing"
+      ? "Validando cartão..."
+      : cardPaymentState === "authorizing"
+        ? "Autorizando pagamento..."
         : buttonLabel;
+    const missingSopClientId = !isCieloClientConfigLoading && cieloClientConfig?.sopClientId === "";
 
     return (
       <div className="cielo-panel">
         <p className="secure-note">
           <AlertCircle size={16} />
-          O pagamento acontece na página segura da Cielo. Não coletamos número do cartão, CVV ou validade neste site.
+          O cartão é tokenizado pela Cielo via Silent Order Post e autenticação 3DS. Dados crus do cartão não são enviados ao backend da A.B.B.C.
         </p>
+        {missingSopClientId ? (
+          <p className="donation-error">Pagamento com cartão em ativação pela Cielo. Use Pix, TED, DOC ou Invoice por enquanto.</p>
+        ) : null}
         <div className="cielo-form">
           <label>
             <span>Valor</span>
@@ -1063,13 +1255,80 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
               autoComplete="tel"
             />
           </label>
+          <label>
+            <span>Nome impresso no cartão</span>
+            <input
+              value={cieloPaymentForm.cardHolder}
+              onChange={(event) => updateCieloPaymentField("cardHolder", event.target.value)}
+              autoComplete="cc-name"
+            />
+          </label>
+          <label>
+            <span>Número do cartão</span>
+            <input
+              value={cieloPaymentForm.cardNumber}
+              onChange={(event) => updateCieloPaymentField("cardNumber", event.target.value)}
+              inputMode="numeric"
+              autoComplete="cc-number"
+            />
+          </label>
+          <label>
+            <span>Validade MM/AA</span>
+            <input
+              value={cieloPaymentForm.cardExpiration}
+              onChange={(event) => updateCieloPaymentField("cardExpiration", event.target.value)}
+              inputMode="numeric"
+              autoComplete="cc-exp"
+              placeholder="MM/AA"
+            />
+          </label>
+          <label>
+            <span>CVV</span>
+            <input
+              value={cieloPaymentForm.cardCvv}
+              onChange={(event) => updateCieloPaymentField("cardCvv", event.target.value)}
+              inputMode="numeric"
+              autoComplete="cc-csc"
+            />
+          </label>
+          <label>
+            <span>Bandeira</span>
+            <select
+              value={cieloPaymentForm.brand}
+              onChange={(event) => updateCieloPaymentField("brand", event.target.value)}
+              autoComplete="cc-type"
+            >
+              <option value="">Selecione</option>
+              {CARD_BRANDS.map((brand) => (
+                <option key={brand} value={brand}>{brand}</option>
+              ))}
+            </select>
+          </label>
+          {method === "credit" ? (
+            <label>
+              <span>Parcelas</span>
+              <select
+                value={cieloPaymentForm.installments}
+                onChange={(event) => updateCieloPaymentField("installments", event.target.value)}
+              >
+                {Array.from({ length: 12 }, (_, index) => String(index + 1)).map((installment) => (
+                  <option key={installment} value={installment}>{installment}x</option>
+                ))}
+              </select>
+            </label>
+          ) : null}
         </div>
         {cieloPaymentError ? <p className="donation-error">{cieloPaymentError}</p> : null}
+        {cardPaymentMessage ? (
+          <p className={cardPaymentState === "approved" ? "donation-approved" : "donation-error"}>
+            {cardPaymentMessage}
+          </p>
+        ) : null}
         <button
           className="btn btn-gold pay-link"
           type="button"
-          onClick={() => handleCreateCieloPayment(method)}
-          disabled={isBusy}
+          onClick={() => handleAuthorizeCardPayment(method)}
+          disabled={isBusy || missingSopClientId}
         >
           <CreditCard size={18} /> {currentLabel}
         </button>
@@ -1090,13 +1349,13 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
     if (method === "Pix") return "Transferência instantânea com chave CNPJ e comprovante por WhatsApp.";
     if (method === "TED") return "Dados bancários oficiais para transferência identificada.";
     if (method === "DOC") return "Transferência bancária sujeita à compensação.";
-    if (method === "Link de Pagamento") return "Pagamento seguro via Cielo com redirecionamento.";
-    if (method === "Crédito") return "Cartão de crédito em ambiente seguro Cielo.";
-    return "Cartão de débito em ambiente seguro Cielo.";
+    if (method === "Link de Pagamento") return "Link manual configurável pela instituição.";
+    if (method === "Crédito") return "Cartão de crédito tokenizado pela Cielo.";
+    return "Cartão de débito tokenizado pela Cielo.";
   };
 
   const isCieloPaymentMethod = (method: PaymentMethod) =>
-    method === "Link de Pagamento" || method === "Crédito" || method === "Débito";
+    method === "Crédito" || method === "Débito";
 
   const renderPaymentDetails = () => {
     if (selectedPaymentMethod === "Invoice") {
@@ -1173,10 +1432,10 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
     if (selectedPaymentMethod === "Link de Pagamento") {
       return (
         <article className="payment-panel">
-          <span className="tag"><ExternalLink size={15} /> Cielo</span>
+          <span className="tag"><ExternalLink size={15} /> Link manual</span>
           <h3>Link de Pagamento</h3>
-          <p className="sub">Gere um link seguro de pagamento pela Cielo e prossiga no ambiente protegido.</p>
-          <CieloPaymentPanel method="link" buttonLabel="Gerar link de pagamento" />
+          <p className="sub">Use o link de pagamento configurado pela A.B.B.C. quando disponível.</p>
+          <LinkPaymentPanel />
         </article>
       );
     }
@@ -1186,8 +1445,8 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
         <article className="payment-panel">
           <span className="tag"><CreditCard size={15} /> Cielo</span>
           <h3>Crédito</h3>
-          <p className="sub">Você será redirecionado para a página segura da Cielo para pagar com cartão de crédito.</p>
-          <CieloPaymentPanel method="credit" buttonLabel="Pagar com cartão de crédito" />
+          <p className="sub">Pague com cartão de crédito no site. A tokenização acontece pela Cielo e a A.B.B.C. não recebe dados crus do cartão.</p>
+          <CardPaymentPanel method="credit" buttonLabel="Pagar com cartão de crédito" />
         </article>
       );
     }
@@ -1196,8 +1455,8 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
       <article className="payment-panel">
         <span className="tag"><CreditCard size={15} /> Cielo</span>
         <h3>Débito</h3>
-        <p className="sub">Você será redirecionado para a página segura da Cielo para pagar com cartão de débito.</p>
-        <CieloPaymentPanel method="debit" buttonLabel="Pagar com cartão de débito" />
+        <p className="sub">Pague com cartão de débito no site. A autorização é feita pela API E-commerce da Cielo usando token seguro.</p>
+        <CardPaymentPanel method="debit" buttonLabel="Pagar com cartão de débito" />
       </article>
     );
   };
@@ -1241,8 +1500,8 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
         <div className="wrap hero-grid">
           <div className="hero-copy reveal">
             <span className="eyebrow">Associação sem fins lucrativos · desde 2016</span>
-            <h1>Benefício à comunidade com seriedade, acolhimento e transparência.</h1>
-            <p className="lead">A A.B.B.C. transforma doações em atendimento social, educação, cultura, esporte, qualificação e apoio real para famílias em situação de vulnerabilidade.</p>
+            <h1>Apoie ações que transformam cuidado em oportunidade.</h1>
+            <p className="lead">A A.B.B.C fortalece iniciativas de benefício à comunidade, conectando solidariedade, cidadania e impacto social.</p>
             <div className="hero-actions">
               <a className="btn btn-gold" href="#doar"><Heart size={18} /> Fazer uma doação</a>
               <button
@@ -1271,9 +1530,9 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
           <div className="hero-figure reveal">
             <div className="hero-payment-card" aria-label="Pagamentos online disponíveis">
               <img src={LOGO} alt="Três figuras acolhidas por mãos formando um coração — símbolo da A.B.B.C" />
-              <span>Pagamentos online</span>
+              <span>Doação segura</span>
               <h2>Doe com Pix, cartão, invoice ou transferência.</h2>
-              <p>Fluxo seguro com redirecionamento para Cielo nos pagamentos por cartão e link de pagamento.</p>
+              <p>Escolha a forma de contribuição mais adequada e acompanhe instruções oficiais da A.B.B.C.</p>
               <div>
                 <small>Ambiente seguro</small>
                 <b>Cielo</b>
@@ -1755,16 +2014,16 @@ const CSS = `
   --shadow:0 18px 48px -24px rgba(14,63,75,.40);
   --shadow-sm:0 8px 22px -16px rgba(14,63,75,.35);
   --r:20px; --maxw:1120px;
-  font-family:'Mulish',system-ui,sans-serif;color:var(--ink);
+  font-family:'Poppins',system-ui,sans-serif;color:var(--ink);
   background:var(--paper);line-height:1.6;font-size:17px;
   -webkit-font-smoothing:antialiased;overflow-x:hidden;
 }
 .abbc-page *{box-sizing:border-box;margin:0;padding:0}
-.abbc-page h1,.abbc-page h2,.abbc-page h3{font-family:'Fraunces',Georgia,serif;font-weight:600;line-height:1.08;letter-spacing:-.01em}
+.abbc-page h1,.abbc-page h2,.abbc-page h3{font-family:'Poppins',Georgia,serif;font-weight:600;line-height:1.08;letter-spacing:-.01em}
 .abbc-page a{color:inherit;text-decoration:none}
 .abbc-page img{max-width:100%}
 .abbc-page .wrap{width:min(100% - 44px, var(--maxw));margin-inline:auto}
-.abbc-page .eyebrow{font-family:'Mulish';font-weight:700;font-size:.74rem;letter-spacing:.18em;text-transform:uppercase;color:var(--gold-deep);display:inline-flex;align-items:center;gap:9px}
+.abbc-page .eyebrow{font-family:'Poppins';font-weight:700;font-size:.74rem;letter-spacing:.18em;text-transform:uppercase;color:var(--gold-deep);display:inline-flex;align-items:center;gap:9px}
 .abbc-page .eyebrow::before{content:"";width:26px;height:2px;background:var(--gold);border-radius:2px}
 
 .abbc-page header.nav{position:sticky;top:0;z-index:50;background:rgba(9,34,42,.88);backdrop-filter:blur(14px);border-bottom:1px solid rgba(243,195,115,.12);transition:border-color .3s, box-shadow .3s, background .3s}
@@ -1773,13 +2032,13 @@ const CSS = `
 .abbc-page .brand{display:flex;align-items:center;gap:12px}
 .abbc-page .brand img{height:46px;width:auto;display:block}
 .abbc-page .brand .bt{display:flex;flex-direction:column;line-height:1.05}
-.abbc-page .brand .bt b{font-family:'Fraunces';font-weight:700;font-size:1.18rem;color:#fff;letter-spacing:.02em}
+.abbc-page .brand .bt b{font-family:'Poppins';font-weight:700;font-size:1.18rem;color:#fff;letter-spacing:.02em}
 .abbc-page .brand .bt span{font-size:.66rem;letter-spacing:.12em;text-transform:uppercase;color:#b9d2d6;font-weight:700}
 .abbc-page nav.links{display:flex;align-items:center;gap:30px}
 .abbc-page nav.links a{font-weight:700;font-size:.95rem;color:#dceced;position:relative;padding:6px 0}
 .abbc-page nav.links a::after{content:"";position:absolute;left:0;bottom:0;height:2px;width:0;background:var(--gold);transition:width .25s}
 .abbc-page nav.links a:hover::after{width:100%}
-.abbc-page .btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;font-family:'Mulish';font-weight:700;font-size:.97rem;cursor:pointer;border:none;padding:13px 24px;border-radius:999px;transition:transform .2s, box-shadow .2s, background .2s}
+.abbc-page .btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;font-family:'Poppins';font-weight:700;font-size:.97rem;cursor:pointer;border:none;padding:13px 24px;border-radius:999px;transition:transform .2s, box-shadow .2s, background .2s}
 .abbc-page .btn-gold{background:var(--gold);color:#3a2705;box-shadow:0 12px 26px -12px rgba(224,153,46,.85)}
 .abbc-page .btn-gold:hover{transform:translateY(-2px);background:#EEA63A;box-shadow:0 16px 32px -12px rgba(224,153,46,.95)}
 .abbc-page .btn-ghost{background:transparent;color:var(--petrol);border:1.5px solid var(--petrol)}
@@ -1828,7 +2087,7 @@ const CSS = `
 .abbc-page .qs-card dt{font-weight:700;color:var(--muted)}
 .abbc-page .qs-card dd{font-weight:600;color:var(--ink);text-align:right}
 .abbc-page .qs-sign{margin-top:24px;padding-top:20px;border-top:1px dashed var(--line)}
-.abbc-page .qs-sign b{display:block;font-family:'Fraunces';font-size:1.05rem;color:var(--petrol)}
+.abbc-page .qs-sign b{display:block;font-family:'Poppins';font-size:1.05rem;color:var(--petrol)}
 .abbc-page .qs-sign small{color:var(--muted);font-weight:600}
 
 .abbc-page .atuacao{background:var(--surface-2);border-block:1px solid var(--line)}
@@ -1850,15 +2109,15 @@ const CSS = `
 .abbc-page .dgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:22px;align-items:stretch;max-width:900px;margin-inline:auto}
 .abbc-page .dcard{background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.14);border-radius:var(--r);padding:28px 26px;display:flex;flex-direction:column;backdrop-filter:blur(4px);position:relative}
 .abbc-page .dcard .tag{display:inline-flex;align-items:center;gap:9px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;font-size:.72rem;color:#f3c373;margin-bottom:14px}
-.abbc-page .dcard h3{font-family:'Fraunces';font-size:1.5rem;color:#fff;margin-bottom:6px}
+.abbc-page .dcard h3{font-family:'Poppins';font-size:1.5rem;color:#fff;margin-bottom:6px}
 .abbc-page .dcard > p.sub{font-size:.92rem;color:#aecace;margin-bottom:20px}
 .abbc-page .payment-section{display:grid;gap:24px;max-width:1080px;margin-inline:auto}
 .abbc-page .payment-methods,.abbc-page .payment-panel{background:linear-gradient(180deg,rgba(255,255,255,.11),rgba(255,255,255,.055));border:1px solid rgba(255,255,255,.16);border-radius:22px;padding:28px;backdrop-filter:blur(10px);box-shadow:0 24px 60px -42px rgba(0,0,0,.9)}
 .abbc-page .payment-methods-head{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:20px}
-.abbc-page .payment-methods h3{font-family:'Fraunces';font-size:clamp(1.55rem,2.4vw,2.15rem);color:#fff}
+.abbc-page .payment-methods h3{font-family:'Poppins';font-size:clamp(1.55rem,2.4vw,2.15rem);color:#fff}
 .abbc-page .payment-methods-head p{max-width:36ch;color:#aecacf;font-size:.94rem}
 .abbc-page .payment-method-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:12px}
-.abbc-page .payment-method-card{width:100%;min-height:178px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.055);color:#eaf3f4;border-radius:16px;padding:16px 14px;text-align:left;font-family:'Mulish',Arial,sans-serif;cursor:pointer;display:flex;flex-direction:column;gap:10px;transition:background .2s,border-color .2s,color .2s,transform .15s,box-shadow .2s}
+.abbc-page .payment-method-card{width:100%;min-height:178px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.055);color:#eaf3f4;border-radius:16px;padding:16px 14px;text-align:left;font-family:'Poppins',Arial,sans-serif;cursor:pointer;display:flex;flex-direction:column;gap:10px;transition:background .2s,border-color .2s,color .2s,transform .15s,box-shadow .2s}
 .abbc-page .payment-method-card:hover{transform:translateY(-3px);border-color:rgba(243,195,115,.44);box-shadow:0 18px 38px -30px rgba(0,0,0,.85)}
 .abbc-page .payment-method-card.selected{background:linear-gradient(180deg,rgba(243,195,115,.22),rgba(224,153,46,.12));border-color:rgba(243,195,115,.72);color:#fff}
 .abbc-page .payment-method-card i{width:42px;height:42px;border-radius:12px;background:rgba(243,195,115,.13);color:#f3c373;display:grid;place-items:center;font-style:normal}
@@ -1867,7 +2126,7 @@ const CSS = `
 .abbc-page .payment-method-card em{margin-top:auto;font-style:normal;color:#ffe2ae;font-size:.67rem;letter-spacing:.06em;text-transform:uppercase;font-weight:900}
 .abbc-page .payment-panel{min-height:430px;display:flex;flex-direction:column}
 .abbc-page .payment-panel .tag{display:inline-flex;align-items:center;gap:9px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;font-size:.72rem;color:#f3c373;margin-bottom:14px}
-.abbc-page .payment-panel h3{font-family:'Fraunces';font-size:clamp(1.9rem,3vw,2.55rem);color:#fff;margin-bottom:10px}
+.abbc-page .payment-panel h3{font-family:'Poppins';font-size:clamp(1.9rem,3vw,2.55rem);color:#fff;margin-bottom:10px}
 .abbc-page .payment-panel > p.sub{font-size:1rem;color:#c8dcdf;margin-bottom:22px;line-height:1.62;max-width:62ch}
 .abbc-page .payment-detail-rows{display:grid;gap:9px;margin-bottom:16px}
 .abbc-page .payment-detail-rows p{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:0;padding:13px 0;border-bottom:1px solid rgba(255,255,255,.11)}
@@ -1881,9 +2140,10 @@ const CSS = `
 .abbc-page .cielo-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .abbc-page .cielo-form label{display:grid;gap:6px}
 .abbc-page .cielo-form label span{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:#a9c8cc;font-weight:800}
-.abbc-page .cielo-form input{width:100%;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.10);color:#fff;border-radius:12px;padding:13px 14px;font:700 .94rem 'Mulish',Arial,sans-serif;outline:none;transition:border-color .2s, box-shadow .2s, background .2s}
+.abbc-page .cielo-form input,.abbc-page .cielo-form select{width:100%;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.10);color:#fff;border-radius:12px;padding:13px 14px;font:700 .94rem 'Poppins',Arial,sans-serif;outline:none;transition:border-color .2s, box-shadow .2s, background .2s}
+.abbc-page .cielo-form select{appearance:auto;background:#f7fbfb;color:#173d47}
 .abbc-page .cielo-form input::placeholder{color:#83aab0}
-.abbc-page .cielo-form input:focus{border-color:#f3c373;box-shadow:0 0 0 3px rgba(243,195,115,.16);background:rgba(255,255,255,.11)}
+.abbc-page .cielo-form input:focus,.abbc-page .cielo-form select:focus{border-color:#f3c373;box-shadow:0 0 0 3px rgba(243,195,115,.16);background:rgba(255,255,255,.11)}
 .abbc-page .method-title{color:#fff;font-weight:900;font-size:1rem;margin:0 0 10px}
 .abbc-page .qrbox{background:#fff;border-radius:14px;padding:12px;width:168px;height:168px;display:grid;place-items:center;margin-bottom:18px}
 .abbc-page .qrbox svg{width:100%;height:100%;display:block}
@@ -1906,7 +2166,7 @@ const CSS = `
 .abbc-page .international-modal{width:min(760px,calc(100vw - 28px));max-height:min(90vh,850px);background:linear-gradient(180deg,#103f4b,#082a34);color:#fff;border:1px solid rgba(243,195,115,.22);border-radius:22px;box-shadow:0 32px 100px rgba(0,0,0,.46);display:flex;flex-direction:column;overflow:hidden}
 .abbc-page .international-modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:26px 28px 20px;border-bottom:1px solid rgba(255,255,255,.12);background:linear-gradient(180deg,rgba(255,255,255,.10),rgba(255,255,255,.025))}
 .abbc-page .international-modal-head .invoice-kicker{margin-bottom:8px}
-.abbc-page .international-modal-head h3{font-family:'Fraunces';font-size:1.65rem;color:#fff;margin:0 0 4px}
+.abbc-page .international-modal-head h3{font-family:'Poppins';font-size:1.65rem;color:#fff;margin:0 0 4px}
 .abbc-page .international-modal-head p{color:#c6dcdf;font-size:.95rem;margin:0}
 .abbc-page .modal-close{flex:none;width:38px;height:38px;border-radius:999px;border:1px solid rgba(255,255,255,.22);background:rgba(255,255,255,.08);color:#fff;font-size:1.55rem;line-height:1;cursor:pointer;display:grid;place-items:center;transition:background .2s, color .2s, transform .15s}
 .abbc-page .modal-close:hover{background:#fff;color:var(--petrol);transform:translateY(-1px)}
@@ -1914,7 +2174,7 @@ const CSS = `
 .abbc-page .international-form{display:grid;gap:14px}
 .abbc-page .international-form label{display:grid;gap:6px}
 .abbc-page .international-form label span{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:#a9c8cc;font-weight:800}
-.abbc-page .international-form input,.abbc-page .international-form select,.abbc-page .international-form textarea{width:100%;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.10);color:#fff;border-radius:12px;padding:13px 14px;font:700 .94rem 'Mulish',Arial,sans-serif;outline:none;transition:border-color .2s, box-shadow .2s, background .2s}
+.abbc-page .international-form input,.abbc-page .international-form select,.abbc-page .international-form textarea{width:100%;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.10);color:#fff;border-radius:12px;padding:13px 14px;font:700 .94rem 'Poppins',Arial,sans-serif;outline:none;transition:border-color .2s, box-shadow .2s, background .2s}
 .abbc-page .international-form select{appearance:auto;color:#173d47;background:#f7fbfb}
 .abbc-page .international-form textarea{resize:vertical;min-height:78px}
 .abbc-page .international-form input::placeholder{color:#83aab0}
@@ -1961,17 +2221,18 @@ const CSS = `
 .abbc-page .donation-form{display:grid;gap:12px;margin-top:2px}
 .abbc-page .donation-form label{display:grid;gap:6px}
 .abbc-page .donation-form label span{font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:#a9c8cc;font-weight:800}
-.abbc-page .donation-form input,.abbc-page .donation-form select,.abbc-page .donation-form textarea{width:100%;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.08);color:#fff;border-radius:10px;padding:11px 12px;font:600 .94rem 'Mulish',Arial,sans-serif;outline:none;transition:border-color .2s, box-shadow .2s, background .2s}
+.abbc-page .donation-form input,.abbc-page .donation-form select,.abbc-page .donation-form textarea{width:100%;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.08);color:#fff;border-radius:10px;padding:11px 12px;font:600 .94rem 'Poppins',Arial,sans-serif;outline:none;transition:border-color .2s, box-shadow .2s, background .2s}
 .abbc-page .donation-form textarea{resize:vertical;min-height:88px}
 .abbc-page .donation-form select{appearance:auto;color:#173d47;background:#f7fbfb}
 .abbc-page .donation-form input::placeholder,.abbc-page .donation-form textarea::placeholder{color:#83aab0}
 .abbc-page .donation-form input:focus,.abbc-page .donation-form select:focus,.abbc-page .donation-form textarea:focus{border-color:#f3c373;box-shadow:0 0 0 3px rgba(243,195,115,.16);background:rgba(255,255,255,.11)}
 .abbc-page .donation-row{display:grid;grid-template-columns:1fr 108px;gap:10px}
 .abbc-page .donation-error{background:rgba(201,69,69,.16);border:1px solid rgba(255,125,125,.35);color:#ffd6d6;border-radius:10px;padding:10px 12px;font-size:.86rem;font-weight:700}
+.abbc-page .donation-approved{background:rgba(54,153,119,.16);border:1px solid rgba(118,221,179,.38);color:#d9f8ec;border-radius:10px;padding:10px 12px;font-size:.86rem;font-weight:800}
 .abbc-page .btn:disabled{opacity:.65;cursor:not-allowed;transform:none;box-shadow:none}
 .abbc-page .donation-success{margin-top:18px;background:rgba(255,255,255,.08);border:1px solid rgba(243,195,115,.38);border-radius:14px;padding:16px}
 .abbc-page .success-pill{display:inline-flex;border-radius:999px;background:rgba(54,153,119,.18);border:1px solid rgba(54,153,119,.36);color:#baf0dc;padding:5px 10px;font-size:.72rem;font-weight:900;text-transform:uppercase;letter-spacing:.06em}
-.abbc-page .donation-success h4{font-family:'Fraunces';font-size:1.18rem;color:#fff;margin:12px 0 10px}
+.abbc-page .donation-success h4{font-family:'Poppins';font-size:1.18rem;color:#fff;margin:12px 0 10px}
 .abbc-page .sync-warning{background:rgba(224,153,46,.18);border:1px solid rgba(243,195,115,.42);color:#ffe7bd;border-radius:10px;padding:10px 12px;margin:10px 0;font-size:.86rem;font-weight:800;line-height:1.45}
 .abbc-page .invoice-lines{display:grid;gap:8px;margin-bottom:14px}
 .abbc-page .invoice-lines p{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:0;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,.1)}
@@ -1995,9 +2256,9 @@ const CSS = `
 .abbc-page footer{background:var(--petrol);color:#cfe1e3;padding:56px 0 28px}
 .abbc-page .foot-top{display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:36px;align-items:start}
 .abbc-page .foot-brand img{height:64px;margin-bottom:16px}
-.abbc-page .foot-brand b{font-family:'Fraunces';font-size:1.2rem;color:#fff;display:block}
+.abbc-page .foot-brand b{font-family:'Poppins';font-size:1.2rem;color:#fff;display:block}
 .abbc-page .foot-brand p{font-size:.9rem;color:#a7c4c7;margin-top:10px;max-width:32ch}
-.abbc-page .fcol h4{font-family:'Mulish';font-size:.74rem;letter-spacing:.14em;text-transform:uppercase;color:#f3c373;margin-bottom:14px;font-weight:800}
+.abbc-page .fcol h4{font-family:'Poppins';font-size:.74rem;letter-spacing:.14em;text-transform:uppercase;color:#f3c373;margin-bottom:14px;font-weight:800}
 .abbc-page .fcol p,.abbc-page .fcol a{display:block;font-size:.92rem;color:#bdd6d8;margin-bottom:8px}
 .abbc-page .fcol a:hover{color:#fff}
 .abbc-page .foot-bot{margin-top:40px;padding-top:22px;border-top:1px solid rgba(255,255,255,.12);display:flex;flex-wrap:wrap;gap:10px;justify-content:space-between;font-size:.82rem;color:#90b0b3}
@@ -2008,13 +2269,14 @@ const CSS = `
 .abbc-page .img-grid.two{grid-template-columns:repeat(2,1fr);max-width:880px;margin-inline:auto}
 .abbc-page .img-grid img{display:block;width:100%;height:auto;border-radius:16px;box-shadow:var(--shadow-sm)}
 
-.abbc-page .appeal{background:linear-gradient(135deg,#E8A33D 0%, #D98B25 52%, #C47E1C 100%);position:relative;overflow:hidden}
-.abbc-page .appeal::before{content:"";position:absolute;inset:auto -8% -55% -8%;height:120%;background:radial-gradient(60% 70% at 50% 0%, rgba(255,255,255,.28), transparent 70%);pointer-events:none}
+.abbc-page .appeal{background:linear-gradient(135deg,#f0b75c 0%, #df982e 46%, #b86f14 100%);position:relative;overflow:hidden;border-block:1px solid rgba(58,39,5,.14)}
+.abbc-page .appeal::before{content:"";position:absolute;inset:0;background:radial-gradient(54% 70% at 50% 0%, rgba(255,255,255,.34), transparent 70%),linear-gradient(180deg,rgba(255,255,255,.18),transparent 44%);pointer-events:none}
+.abbc-page .appeal::after{content:"";position:absolute;left:8%;right:8%;bottom:0;height:1px;background:linear-gradient(90deg,transparent,rgba(58,39,5,.28),transparent)}
 .abbc-page .appeal .wrap{position:relative;z-index:1;text-align:center;max-width:860px}
 .abbc-page .appeal .eyebrow{color:#3a2705}
 .abbc-page .appeal .eyebrow::before{background:#3a2705}
-.abbc-page .appeal h2{font-family:'Fraunces';font-weight:600;font-size:clamp(2.2rem,4.4vw,3.4rem);color:#2a1c04;line-height:1.04;margin:16px 0 0}
-.abbc-page .appeal p{color:#4a350f;font-size:1.14rem;margin:20px auto 32px;max-width:62ch}
+.abbc-page .appeal h2{font-family:'Poppins';font-weight:600;font-size:clamp(2.2rem,4.4vw,3.4rem);color:#2a1c04;line-height:1.04;margin:16px 0 0}
+.abbc-page .appeal p{color:#3f2b08;font-size:1.14rem;margin:20px auto 34px;max-width:62ch;font-weight:600}
 .abbc-page .appeal .cta-row{display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
 .abbc-page .btn-dark{background:var(--petrol);color:#fff;box-shadow:0 16px 32px -14px rgba(14,63,75,.85)}
 .abbc-page .btn-dark:hover{transform:translateY(-2px);background:#0c343e;box-shadow:0 20px 38px -14px rgba(14,63,75,.95)}

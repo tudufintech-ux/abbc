@@ -15,12 +15,18 @@ services:
       - key: ABBC_SITE_URL
         sync: false
       - key: SITE_URL
-        value: https://associacaoabbc.com.br
+        value: https://abbc-dw0f.onrender.com
       - key: CIELO_ENV
         value: production
       - key: CIELO_MERCHANT_ID
         sync: false
       - key: CIELO_MERCHANT_KEY
+        sync: false
+      - key: CIELO_SOP_CLIENT_ID
+        sync: false
+      - key: CIELO_3DS_CLIENT_ID
+        sync: false
+      - key: VITE_CIELO_PAYMENT_URL
         sync: false
       - key: ABBC_BENEFICIARY_NAME
         value: ASSOCIACAO BRASILEIRA DE BENEFICIO A COMUNIDADE
