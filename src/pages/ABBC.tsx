@@ -90,6 +90,7 @@ const WHATSAPP_RECEIPT_URL = "https://wa.me/5511921813353?text=" + encodeURIComp
 type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 type CieloPaymentMethod = "credit" | "debit";
 type CieloCardBrand = "Visa" | "Mastercard" | "Elo" | "Amex" | "Hipercard" | "Diners" | "Discover" | "Unknown";
+type CieloApiCardBrand = "Visa" | "Master" | "Elo" | "Amex" | "Hipercard" | "Diners" | "Discover";
 type CardPaymentState = "idle" | "tokenizing" | "authorizing" | "approved" | "declined" | "error";
 type CieloCardClientConfig = {
   env: "production" | "sandbox";
@@ -148,8 +149,9 @@ function formatCardNumber(value: string) {
 }
 
 function formatCardExpiration(value: string) {
-  const digits = onlyDigits(value).slice(0, 4);
+  const digits = onlyDigits(value).slice(0, 6);
   if (digits.length <= 2) return digits;
+  if (digits.length <= 4) return `${digits.slice(0, 2)}/${digits.slice(2)}`;
   return `${digits.slice(0, 2)}/${digits.slice(2)}`;
 }
 
@@ -159,6 +161,11 @@ function parseCardExpiration(value: string) {
     month: month.padStart(2, "0"),
     year: year.length === 2 ? `20${year}` : year,
   };
+}
+
+function formatCieloExpirationDate(value: string) {
+  const { month, year } = parseCardExpiration(value);
+  return `${month}/${year}`;
 }
 
 function isBetween(value: number, min: number, max: number) {
@@ -216,7 +223,7 @@ function isValidLuhn(cardNumber: string) {
 }
 
 function isValidCardExpiration(value: string) {
-  if (!/^\d{2}\/\d{2}$/.test(value)) return false;
+  if (!/^\d{2}\/(\d{2}|\d{4})$/.test(value)) return false;
 
   const { month, year } = parseCardExpiration(value);
   const monthNumber = Number(month);
@@ -233,6 +240,31 @@ function isValidCardCvv(cvv: string, brand: CieloCardBrand) {
   const digits = onlyDigits(cvv);
   if (brand === "Amex") return digits.length === 4;
   return digits.length >= 3 && digits.length <= 4;
+}
+
+function getCieloApiBrand(brand: CieloCardBrand): CieloApiCardBrand | null {
+  if (brand === "Unknown") return null;
+  if (brand === "Mastercard") return "Master";
+  return brand;
+}
+
+function getCieloTokenErrorDetails(response: unknown) {
+  if (Array.isArray(response)) {
+    return response.map((item) => {
+      if (item && typeof item === "object") {
+        const record = item as Record<string, unknown>;
+        return record.Message ?? record.message ?? record.Description ?? record.description ?? record.Code ?? record.code;
+      }
+      return item;
+    }).filter(Boolean);
+  }
+
+  if (response && typeof response === "object") {
+    const record = response as Record<string, unknown>;
+    return record.Message ?? record.message ?? record.Errors ?? record.errors ?? record.Description ?? record.description;
+  }
+
+  return response;
 }
 
 function getCieloSopRuntimeStatus(): CieloSopRuntimeStatus {
@@ -975,14 +1007,17 @@ export default function ABBC() {
     if (!cieloPaymentForm.cardHolder.trim()) return "Informe o nome impresso no cartão.";
     if (!isValidLuhn(cieloPaymentForm.cardNumber)) return "Informe um número de cartão válido.";
     if (brand === "Unknown") return "Não foi possível identificar a bandeira do cartão.";
-    if (!isValidCardExpiration(cieloPaymentForm.cardExpiration)) return "Informe uma validade válida no formato MM/AA.";
+    if (!isValidCardExpiration(cieloPaymentForm.cardExpiration)) return "Informe uma validade válida no formato MM/AA ou MM/AAAA.";
     if (!isValidCardCvv(cieloPaymentForm.cardCvv, brand)) return "Informe um CVV válido.";
     if (method === "credit" && Number(cieloPaymentForm.installments) < 1) return "Informe a quantidade de parcelas.";
     return null;
   }
 
-  async function tokenizeCieloCard(config: CieloCardClientConfig, brand: CieloCardBrand) {
-    const { month, year } = parseCardExpiration(cieloPaymentForm.cardExpiration);
+  async function tokenizeCieloCard(config: CieloCardClientConfig, brand: CieloApiCardBrand) {
+    const cardNumber = onlyDigits(cieloPaymentForm.cardNumber);
+    const securityCode = onlyDigits(cieloPaymentForm.cardCvv);
+    const expirationDate = formatCieloExpirationDate(cieloPaymentForm.cardExpiration);
+    const holder = cieloPaymentForm.cardHolder.trim();
     const runtimeStatus = getCieloSopRuntimeStatus();
     console.info("[CIELO][SOP runtime]", runtimeStatus);
     console.info("[CIELO][tokenize start]", {
@@ -992,6 +1027,15 @@ export default function ABBC() {
       scriptLoaded: runtimeStatus.hasKnownSdkObject,
       brand,
     });
+    console.info("[CIELO][tokenize payload]", {
+      brand,
+      holder,
+      expirationDate,
+      cardNumberLength: cardNumber.length,
+      cardLast4: cardNumber.slice(-4),
+      securityCodeLength: securityCode.length,
+      clientIdLength: PUBLIC_CIELO_SOP_CLIENT_ID.length,
+    });
 
     const response = await fetch(getCieloPublicCardEndpoint(config.env), {
       method: "POST",
@@ -1000,11 +1044,10 @@ export default function ABBC() {
         ClientId: PUBLIC_CIELO_SOP_CLIENT_ID,
       },
       body: JSON.stringify({
-        ClientId: PUBLIC_CIELO_SOP_CLIENT_ID,
-        CardNumber: onlyDigits(cieloPaymentForm.cardNumber),
-        Holder: cieloPaymentForm.cardHolder.trim(),
-        ExpirationDate: `${month}/${year}`,
-        SecurityCode: onlyDigits(cieloPaymentForm.cardCvv),
+        CardNumber: cardNumber,
+        Holder: holder,
+        ExpirationDate: expirationDate,
+        SecurityCode: securityCode,
         Brand: brand,
       }),
     });
@@ -1022,13 +1065,15 @@ export default function ABBC() {
     console.info("[CIELO][tokenize status]", response.status);
 
     if (!response.ok) {
-      console.error("[CIELO][tokenize body]", responseBody || responseText);
+      console.error("[CIELO][tokenize body raw]", JSON.stringify(responseBody, null, 2));
+      console.error("[CIELO][tokenize error details]", getCieloTokenErrorDetails(responseBody) || responseText);
       throw new Error("Não foi possível validar o cartão. Confira número, validade, CVV e tente novamente.");
     }
 
     const paymentToken = getTokenFromCieloResponse(responseBody);
     if (!paymentToken) {
-      console.error("[CIELO][tokenize missing token]", responseBody || responseText);
+      console.error("[CIELO][tokenize body raw]", JSON.stringify(responseBody, null, 2));
+      console.error("[CIELO][tokenize missing token]", getCieloTokenErrorDetails(responseBody) || responseText);
       throw new Error("Não foi possível validar o cartão. Confira número, validade, CVV e tente novamente.");
     }
 
@@ -1038,6 +1083,7 @@ export default function ABBC() {
   async function handleAuthorizeCardPayment(method: CieloPaymentMethod) {
     const amount = parseDecimalAmount(cieloPaymentForm.amount);
     const brand = detectCardBrand(cieloPaymentForm.cardNumber);
+    const cieloBrand = getCieloApiBrand(brand);
     const validationError = getRequiredCardPaymentError(method, amount, brand);
     if (validationError) {
       setCieloPaymentError(validationError);
@@ -1060,7 +1106,12 @@ export default function ABBC() {
       }
 
       setCardPaymentState("tokenizing");
-      const paymentToken = await tokenizeCieloCard(config, brand);
+      if (!cieloBrand) {
+        setCardPaymentState("error");
+        setCieloPaymentError("Não foi possível identificar a bandeira do cartão.");
+        return;
+      }
+      const paymentToken = await tokenizeCieloCard(config, cieloBrand);
 
       setCardPaymentState("authorizing");
       const result = await authorizeCieloCardPayment({
@@ -1068,7 +1119,7 @@ export default function ABBC() {
           amount,
           method,
           paymentToken,
-          brand,
+          brand: cieloBrand,
           installments: method === "credit" ? Number(cieloPaymentForm.installments) || 1 : undefined,
           donorName: cieloPaymentForm.donorName.trim() || undefined,
           donorEmail: cieloPaymentForm.donorEmail.trim() || undefined,
@@ -1381,7 +1432,7 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
             />
           </label>
           <label>
-            <span>Validade MM/AA</span>
+            <span>Validade MM/AA ou MM/AAAA</span>
             <input
               value={cieloPaymentForm.cardExpiration}
               onChange={(event) => updateCieloPaymentField("cardExpiration", event.target.value)}

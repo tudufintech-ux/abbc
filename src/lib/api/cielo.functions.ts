@@ -5,7 +5,7 @@ const cardPaymentInputSchema = z.object({
   amount: z.number().positive(),
   method: z.enum(["credit", "debit"]),
   paymentToken: z.string().min(1),
-  brand: z.enum(["Visa", "Mastercard", "Elo", "Amex", "Hipercard", "Diners", "Discover"]),
+  brand: z.enum(["Visa", "Master", "Elo", "Amex", "Hipercard", "Diners", "Discover"]),
   installments: z.number().int().positive().optional(),
   donorName: z.string().optional(),
   donorEmail: z.string().email().optional().or(z.literal("")),
