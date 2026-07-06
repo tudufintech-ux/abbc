@@ -4,6 +4,7 @@ import {
   Heart, Check, Copy, Users, GraduationCap, Activity, Briefcase,
   HeartHandshake, Scale, Zap, Landmark, Home, Building2,
   UserRound, Mail, Phone, MessageCircle, Menu, FileText, Download,
+  CreditCard, Receipt, ExternalLink, AlertCircle,
 } from "lucide-react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
@@ -19,6 +20,7 @@ import {
   type StoredDonationInvoice,
 } from "@/lib/invoiceStorage";
 import { registerDonation } from "@/lib/donationSync";
+import { createCieloPaymentRedirect } from "@/lib/api/cielo.functions";
 
 /* ------------------------------------------------------------------ */
 /*  Assets (logos embutidos como data URI — página 100% autônoma)     */
@@ -76,6 +78,27 @@ const PAYMENT_TERM_OPTIONS = [
   "Immediate Payment",
   "Custom",
 ] as const;
+const PAYMENT_METHODS = ["Invoice", "Pix", "TED", "DOC", "Link de Pagamento", "Crédito", "Débito"] as const;
+const WHATSAPP_RECEIPT_URL = "https://wa.me/5511921813353?text=" + encodeURIComponent(
+  "Olá, A.B.B.C. Estou enviando o comprovante da minha doação.",
+);
+
+type PaymentMethod = (typeof PAYMENT_METHODS)[number];
+type CieloPaymentMethod = "link" | "credit" | "debit";
+type CieloPaymentState = "idle" | "loading" | "redirecting";
+type CieloPaymentFormState = {
+  amount: string;
+  donorName: string;
+  donorEmail: string;
+  donorPhone: string;
+};
+
+const INITIAL_CIELO_PAYMENT_FORM: CieloPaymentFormState = {
+  amount: "",
+  donorName: "",
+  donorEmail: "",
+  donorPhone: "",
+};
 
 function getBankDetailsLines(paymentReference?: string, includeInternational = true) {
   return [
@@ -99,14 +122,19 @@ function getBankDetailsLines(paymentReference?: string, includeInternational = t
 
 function getNationalBankDetailsLines() {
   return [
+    `Titular: ${ABBC_PUBLIC_DETAILS.beneficiaryName}`,
+    `CNPJ: ${ABBC_PUBLIC_DETAILS.beneficiaryCnpj}`,
     `Banco: ${ABBC_PUBLIC_DETAILS.bankName}`,
+    `Código do banco: ${ABBC_PUBLIC_DETAILS.bankCode}`,
     `Agência: ${ABBC_PUBLIC_DETAILS.bankAgency}`,
-    `Conta corrente: ${ABBC_PUBLIC_DETAILS.bankAccount}`,
+    `Conta: ${ABBC_PUBLIC_DETAILS.bankAccount}`,
+    "Tipo de conta: Conta corrente",
   ];
 }
 
 type InternationalInvoiceFormState = {
   donorName: string;
+  donorCompany: string;
   donorDocumentType: string;
   donorDocumentNumber: string;
   country: string;
@@ -131,6 +159,7 @@ type InternationalInvoicePdfInput = StoredDonationInvoice & {
 
 const INITIAL_INTERNATIONAL_INVOICE_FORM: InternationalInvoiceFormState = {
   donorName: "",
+  donorCompany: "",
   donorDocumentType: "Company Registration Number",
   donorDocumentNumber: "",
   country: "",
@@ -147,6 +176,7 @@ const INITIAL_INTERNATIONAL_INVOICE_FORM: InternationalInvoiceFormState = {
 
 const INTERNATIONAL_TEST_INVOICE_FORM: InternationalInvoiceFormState = {
   donorName: "Xi'an Sea Castle Oil Co., Ltd.",
+  donorCompany: "Xi'an Sea Castle Oil Co., Ltd.",
   donorDocumentType: "Company Registration Number",
   donorDocumentNumber: "91340400MA2MWG8D2G",
   country: "China",
@@ -648,6 +678,10 @@ export default function ABBC() {
   const [internationalInvoiceError, setInternationalInvoiceError] = useState<string | null>(null);
   const [internationalInvoiceSyncWarning, setInternationalInvoiceSyncWarning] = useState<string | null>(null);
   const [isInternationalInvoiceGenerating, setIsInternationalInvoiceGenerating] = useState(false);
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<PaymentMethod>("Invoice");
+  const [cieloPaymentForm, setCieloPaymentForm] = useState<CieloPaymentFormState>(INITIAL_CIELO_PAYMENT_FORM);
+  const [cieloPaymentState, setCieloPaymentState] = useState<CieloPaymentState>("idle");
+  const [cieloPaymentError, setCieloPaymentError] = useState<string | null>(null);
 
   const selectedInternationalCurrency = getCurrencyConfig(internationalInvoiceForm.currency);
   const filteredCurrencies = useMemo(() => {
@@ -712,6 +746,55 @@ export default function ABBC() {
     updateInternationalInvoiceField("amount", formatCurrencyAmount(amount, internationalInvoiceForm.currency));
   }
 
+  function updateCieloPaymentField<K extends keyof CieloPaymentFormState>(
+    field: K,
+    value: CieloPaymentFormState[K],
+  ) {
+    setCieloPaymentForm((current) => ({ ...current, [field]: value }));
+    setCieloPaymentError(null);
+  }
+
+  function handleCieloAmountBlur() {
+    const amount = parseDecimalAmount(cieloPaymentForm.amount);
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    updateCieloPaymentField("amount", formatCurrencyAmount(amount, "BRL"));
+  }
+
+  async function handleCreateCieloPayment(method: CieloPaymentMethod) {
+    const amount = parseDecimalAmount(cieloPaymentForm.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setCieloPaymentError("Informe um valor maior que zero para gerar o pagamento.");
+      return;
+    }
+
+    setCieloPaymentState("loading");
+    setCieloPaymentError(null);
+
+    try {
+      const result = await createCieloPaymentRedirect({
+        data: {
+          amount,
+          method,
+          donorName: cieloPaymentForm.donorName.trim() || undefined,
+          donorEmail: cieloPaymentForm.donorEmail.trim() || undefined,
+          donorPhone: cieloPaymentForm.donorPhone.trim() || undefined,
+          invoiceNumber: internationalInvoice?.invoiceNumber,
+        },
+      });
+
+      setCieloPaymentState("redirecting");
+      window.location.href = result.paymentUrl;
+    } catch (error) {
+      console.error("[Cielo Payment Redirect Error]", error);
+      setCieloPaymentState("idle");
+      setCieloPaymentError(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível iniciar o pagamento. Tente novamente em instantes.",
+      );
+    }
+  }
+
   function getRequiredInternationalInvoiceError(
     form: InternationalInvoiceFormState,
     amount: number,
@@ -762,9 +845,9 @@ export default function ABBC() {
         dueDate: form.dueDate.trim(),
         paymentTerms: form.paymentTerms.trim() || DEFAULT_PAYMENT_TERMS,
         donorName: form.donorName.trim(),
-        donorDocumentType: form.donorDocumentType.trim(),
-        donorDocumentNumber: form.donorDocumentNumber.trim(),
-        donorTaxId: form.donorDocumentNumber.trim(),
+        donorDocumentType: form.donorCompany.trim() ? "Company" : form.donorDocumentType.trim(),
+        donorDocumentNumber: form.donorCompany.trim() || form.donorDocumentNumber.trim(),
+        donorTaxId: form.donorCompany.trim() || form.donorDocumentNumber.trim(),
         country: form.country.trim(),
         donorEmail: form.donorEmail.trim(),
         donorPhone: form.donorPhone.trim(),
@@ -911,6 +994,192 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
       {copied === id ? "Copiado" : label}
     </button>
   );
+
+  const DetailRows = ({ rows }: { rows: Array<[string, string]> }) => (
+    <div className="payment-detail-rows">
+      {rows.map(([label, value]) => (
+        <p key={label}>
+          <small>{label}</small>
+          <b>{value}</b>
+        </p>
+      ))}
+    </div>
+  );
+
+  const CieloPaymentPanel = ({
+    method,
+    buttonLabel,
+  }: {
+    method: CieloPaymentMethod;
+    buttonLabel: string;
+  }) => {
+    const isBusy = cieloPaymentState !== "idle";
+    const currentLabel = cieloPaymentState === "redirecting"
+      ? "Redirecionando..."
+      : cieloPaymentState === "loading"
+        ? "Gerando pagamento..."
+        : buttonLabel;
+
+    return (
+      <div className="cielo-panel">
+        <p className="secure-note">
+          <AlertCircle size={16} />
+          O pagamento acontece na página segura da Cielo. Não coletamos número do cartão, CVV ou validade neste site.
+        </p>
+        <div className="cielo-form">
+          <label>
+            <span>Valor</span>
+            <input
+              value={cieloPaymentForm.amount}
+              onChange={(event) => updateCieloPaymentField("amount", event.target.value)}
+              onBlur={handleCieloAmountBlur}
+              inputMode="decimal"
+              placeholder="R$ 100,00"
+            />
+          </label>
+          <label>
+            <span>Nome</span>
+            <input
+              value={cieloPaymentForm.donorName}
+              onChange={(event) => updateCieloPaymentField("donorName", event.target.value)}
+              autoComplete="name"
+            />
+          </label>
+          <label>
+            <span>E-mail</span>
+            <input
+              value={cieloPaymentForm.donorEmail}
+              onChange={(event) => updateCieloPaymentField("donorEmail", event.target.value)}
+              type="email"
+              autoComplete="email"
+            />
+          </label>
+          <label>
+            <span>WhatsApp</span>
+            <input
+              value={cieloPaymentForm.donorPhone}
+              onChange={(event) => updateCieloPaymentField("donorPhone", event.target.value)}
+              inputMode="tel"
+              autoComplete="tel"
+            />
+          </label>
+        </div>
+        {cieloPaymentError ? <p className="donation-error">{cieloPaymentError}</p> : null}
+        <button
+          className="btn btn-gold pay-link"
+          type="button"
+          onClick={() => handleCreateCieloPayment(method)}
+          disabled={isBusy}
+        >
+          <CreditCard size={18} /> {currentLabel}
+        </button>
+      </div>
+    );
+  };
+
+  const renderPaymentDetails = () => {
+    if (selectedPaymentMethod === "Invoice") {
+      return (
+        <article className="payment-panel">
+          <span className="tag"><Receipt size={15} /> Invoice</span>
+          <h3>Invoice</h3>
+          <p className="sub">Preencha nome, empresa opcional, e-mail, WhatsApp, país, valor, moeda, finalidade e observações para gerar o invoice.</p>
+          <button
+            className="btn btn-gold pay-link"
+            type="button"
+            onClick={() => setIsInternationalDonationModalOpen(true)}
+          >
+            <FileText size={18} /> Gerar Invoice
+          </button>
+        </article>
+      );
+    }
+
+    if (selectedPaymentMethod === "Pix") {
+      return (
+        <article className="payment-panel">
+          <span className="tag"><Zap size={15} /> Pix</span>
+          <h3>Pix</h3>
+          <p className="sub">Use a chave Pix abaixo e envie o comprovante pelo WhatsApp.</p>
+          <div className="qrbox" aria-label="QR Code Pix">
+            <QRCodeSVG value={PIX_PAYLOAD} size={144} level="M" bgColor="#ffffff" fgColor="#0c343e" />
+          </div>
+          <DetailRows rows={[
+            ["Chave Pix", PIX_DISPLAY_KEY],
+            ["Banco", ABBC_PUBLIC_DETAILS.bankName],
+            ["Titular", ABBC_PUBLIC_DETAILS.beneficiaryName],
+            ["CNPJ", ABBC_PUBLIC_DETAILS.beneficiaryCnpj],
+            ["Instruções", "Use o CNPJ da ABBC como chave Pix."],
+          ]} />
+          <div className="payment-actions">
+            <CopyBtn text={PIX_DISPLAY_KEY} id="pixkey" label="Copiar chave Pix" full />
+            <a className="btn btn-ghost wa-share" href={WHATSAPP_RECEIPT_URL} target="_blank" rel="noopener noreferrer">
+              <MessageCircle size={18} /> Enviar comprovante
+            </a>
+          </div>
+        </article>
+      );
+    }
+
+    if (selectedPaymentMethod === "TED" || selectedPaymentMethod === "DOC") {
+      return (
+        <article className="payment-panel">
+          <span className="tag"><Landmark size={15} /> {selectedPaymentMethod}</span>
+          <h3>{selectedPaymentMethod}</h3>
+          <p className="sub">
+            {selectedPaymentMethod === "DOC"
+              ? "Use os dados bancários abaixo. A confirmação depende da compensação bancária."
+              : "Use os dados bancários abaixo e envie o comprovante pelo WhatsApp."}
+          </p>
+          <DetailRows rows={[
+            ["Titular", ABBC_PUBLIC_DETAILS.beneficiaryName],
+            ["CNPJ", ABBC_PUBLIC_DETAILS.beneficiaryCnpj],
+            ["Banco", ABBC_PUBLIC_DETAILS.bankName],
+            ["Agência", ABBC_PUBLIC_DETAILS.bankAgency],
+            ["Conta", ABBC_PUBLIC_DETAILS.bankAccount],
+            ["Tipo de conta", "Conta corrente"],
+          ]} />
+          <div className="payment-actions">
+            <CopyBtn text={getNationalBankDetailsLines().join("\n")} id={`${selectedPaymentMethod.toLowerCase()}-bank-details`} label="Copiar dados" full />
+            <a className="btn btn-ghost wa-share" href={WHATSAPP_RECEIPT_URL} target="_blank" rel="noopener noreferrer">
+              <MessageCircle size={18} /> Enviar comprovante
+            </a>
+          </div>
+        </article>
+      );
+    }
+
+    if (selectedPaymentMethod === "Link de Pagamento") {
+      return (
+        <article className="payment-panel">
+          <span className="tag"><ExternalLink size={15} /> Cielo</span>
+          <h3>Link de Pagamento</h3>
+          <p className="sub">Gere um link seguro de pagamento pela Cielo e prossiga no ambiente protegido.</p>
+          <CieloPaymentPanel method="link" buttonLabel="Gerar link de pagamento" />
+        </article>
+      );
+    }
+
+    if (selectedPaymentMethod === "Crédito") {
+      return (
+        <article className="payment-panel">
+          <span className="tag"><CreditCard size={15} /> Cielo</span>
+          <h3>Crédito</h3>
+          <p className="sub">Você será redirecionado para a página segura da Cielo para pagar com cartão de crédito.</p>
+          <CieloPaymentPanel method="credit" buttonLabel="Pagar com cartão de crédito" />
+        </article>
+      );
+    }
+
+    return (
+      <article className="payment-panel">
+        <span className="tag"><CreditCard size={15} /> Cielo</span>
+        <h3>Débito</h3>
+        <p className="sub">Você será redirecionado para a página segura da Cielo para pagar com cartão de débito.</p>
+        <CieloPaymentPanel method="debit" buttonLabel="Pagar com cartão de débito" />
+      </article>
+    );
+  };
 
   const programs = [
     { c: "var(--blue)", Icon: Users, t: "Inclusão e família", d: "Inclusão social e fortalecimento dos vínculos familiares como base de toda transformação." },
@@ -1084,47 +1353,27 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
             <h2>Sua doação vira ação concreta.</h2>
             <p>Escolha a forma mais prática para você. Cada contribuição mantém e amplia os programas sociais da A.B.B.C.</p>
           </div>
-          <div className="dgrid">
-
-            <article className="dcard reveal">
-              <span className="tag"><Zap size={15} /> Doação Nacional</span>
-              <h3>PIX</h3>
-              <p className="sub">Chave PIX: {PIX_DISPLAY_KEY}</p>
-              <div className="qrbox" aria-label="QR Code Pix">
-                <QRCodeSVG value={PIX_PAYLOAD} size={144} level="M" bgColor="#ffffff" fgColor="#0c343e" />
+          <div className="payment-section reveal">
+            <div className="payment-methods" aria-label="Formas de Pagamento">
+              <h3>Formas de Pagamento</h3>
+              <div className="payment-method-grid">
+                {PAYMENT_METHODS.map((method) => (
+                  <button
+                    key={method}
+                    type="button"
+                    className={selectedPaymentMethod === method ? "selected" : ""}
+                    onClick={() => {
+                      setSelectedPaymentMethod(method);
+                      setCieloPaymentError(null);
+                    }}
+                    aria-pressed={selectedPaymentMethod === method}
+                  >
+                    {method}
+                  </button>
+                ))}
               </div>
-              <div className="field pixkey">
-                <div className="fl"><small>Chave PIX</small><b>{PIX_DISPLAY_KEY}</b></div>
-                <CopyBtn text={PIX_DISPLAY_KEY} id="pixkey" label="Copiar chave PIX" />
-              </div>
-
-              <h3>TED/Transferência</h3>
-              <div className="national-bank-summary">
-                <p><small>Banco</small><b>{ABBC_PUBLIC_DETAILS.bankName}</b></p>
-                <p><small>Agência</small><b>{ABBC_PUBLIC_DETAILS.bankAgency}</b></p>
-                <p><small>Conta corrente</small><b>{ABBC_PUBLIC_DETAILS.bankAccount}</b></p>
-              </div>
-              <CopyBtn text={getNationalBankDetailsLines().join("\n")} id="bank-details" label="Copiar dados bancários" full />
-              <p className="hint">Use o CNPJ da ABBC como chave PIX.</p>
-            </article>
-
-            <article className="dcard reveal">
-              <span className="tag"><Landmark size={15} /> Wire Transfer (SWIFT)</span>
-              <h3>Doação Internacional</h3>
-              <p className="method-title">Wire Transfer (SWIFT)</p>
-              <p className="sub">Para doações internacionais, gere um invoice e utilize o número como Payment Reference.</p>
-              <div className="international-invoice-card">
-                <span className="invoice-kicker"><FileText size={15} /> Invoice Internacional</span>
-                <button
-                  className="btn btn-gold international-toggle"
-                  type="button"
-                  onClick={() => setIsInternationalDonationModalOpen(true)}
-                >
-                  <FileText size={18} /> Gerar Invoice Internacional
-                </button>
-              </div>
-            </article>
-
+            </div>
+            {renderPaymentDetails()}
           </div>
         </div>
       </section>
@@ -1175,32 +1424,14 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
                   />
                 </label>
 
-                <div className="international-document-row">
-                  <label>
-                    <span>Tipo de documento</span>
-                    <select
-                      value={internationalInvoiceForm.donorDocumentType}
-                      onChange={(event) => updateInternationalInvoiceField("donorDocumentType", event.target.value)}
-                    >
-                      <option value="CPF">CPF</option>
-                      <option value="CNPJ">CNPJ</option>
-                      <option value="Passport">Passport</option>
-                      <option value="Tax ID">Tax ID</option>
-                      <option value="Company Registration Number">Company Registration Number</option>
-                      <option value="Other">Other</option>
-                    </select>
-                  </label>
-
-                  <label>
-                    <span>Número do documento</span>
-                    <input
-                      value={internationalInvoiceForm.donorDocumentNumber}
-                      onChange={(event) => updateInternationalInvoiceField("donorDocumentNumber", event.target.value)}
-                      placeholder="Digite o número do documento do doador ou da empresa"
-                      autoComplete="off"
-                    />
-                  </label>
-                </div>
+                <label>
+                  <span>Empresa / opcional</span>
+                  <input
+                    value={internationalInvoiceForm.donorCompany}
+                    onChange={(event) => updateInternationalInvoiceField("donorCompany", event.target.value)}
+                    autoComplete="organization"
+                  />
+                </label>
 
                 <label>
                   <span>País</span>
@@ -1289,36 +1520,6 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
                       </div>
                     ) : null}
                   </div>
-                </div>
-
-                <div className="international-terms-row">
-                  <label>
-                    <span>Issue Date</span>
-                    <input
-                      value={internationalInvoiceForm.issueDate}
-                      onChange={(event) => updateInternationalInvoiceField("issueDate", event.target.value)}
-                    />
-                  </label>
-
-                  <label>
-                    <span>Due Date</span>
-                    <input
-                      value={internationalInvoiceForm.dueDate}
-                      onChange={(event) => updateInternationalInvoiceField("dueDate", event.target.value)}
-                    />
-                  </label>
-
-                  <label>
-                    <span>Payment Terms</span>
-                    <select
-                      value={internationalInvoiceForm.paymentTerms}
-                      onChange={(event) => updateInternationalInvoiceField("paymentTerms", event.target.value)}
-                    >
-                      {PAYMENT_TERM_OPTIONS.map((term) => (
-                        <option value={term} key={term}>{term}</option>
-                      ))}
-                    </select>
-                  </label>
                 </div>
 
                 <label>
@@ -1604,6 +1805,32 @@ const CSS = `
 .abbc-page .dcard .tag{display:inline-flex;align-items:center;gap:9px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;font-size:.72rem;color:#f3c373;margin-bottom:14px}
 .abbc-page .dcard h3{font-family:'Fraunces';font-size:1.5rem;color:#fff;margin-bottom:6px}
 .abbc-page .dcard > p.sub{font-size:.92rem;color:#aecace;margin-bottom:20px}
+.abbc-page .payment-section{display:grid;grid-template-columns:minmax(220px,.42fr) minmax(0,1fr);gap:22px;align-items:start;max-width:980px;margin-inline:auto}
+.abbc-page .payment-methods,.abbc-page .payment-panel{background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.14);border-radius:var(--r);padding:24px;backdrop-filter:blur(4px)}
+.abbc-page .payment-methods h3{font-family:'Fraunces';font-size:1.45rem;color:#fff;margin-bottom:16px}
+.abbc-page .payment-method-grid{display:grid;gap:8px}
+.abbc-page .payment-method-grid button{width:100%;min-height:42px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);color:#eaf3f4;border-radius:10px;padding:10px 12px;text-align:left;font:900 .9rem 'Mulish',Arial,sans-serif;cursor:pointer;transition:background .2s,border-color .2s,color .2s,transform .15s}
+.abbc-page .payment-method-grid button:hover{transform:translateY(-1px);border-color:rgba(243,195,115,.42)}
+.abbc-page .payment-method-grid button.selected{background:var(--gold);border-color:var(--gold);color:#3a2705}
+.abbc-page .payment-panel{min-height:420px;display:flex;flex-direction:column}
+.abbc-page .payment-panel .tag{display:inline-flex;align-items:center;gap:9px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;font-size:.72rem;color:#f3c373;margin-bottom:14px}
+.abbc-page .payment-panel h3{font-family:'Fraunces';font-size:1.62rem;color:#fff;margin-bottom:8px}
+.abbc-page .payment-panel > p.sub{font-size:.94rem;color:#aecace;margin-bottom:18px;line-height:1.55}
+.abbc-page .payment-detail-rows{display:grid;gap:9px;margin-bottom:16px}
+.abbc-page .payment-detail-rows p{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:0;padding:11px 0;border-bottom:1px solid rgba(255,255,255,.1)}
+.abbc-page .payment-detail-rows small{color:#8fb3b8;font-size:.68rem;text-transform:uppercase;letter-spacing:.1em;font-weight:800}
+.abbc-page .payment-detail-rows b{color:#fff;font-size:.95rem;text-align:right;overflow-wrap:anywhere;max-width:68%}
+.abbc-page .payment-actions{display:grid;gap:10px;margin-top:auto}
+.abbc-page .payment-actions .btn{width:100%;justify-content:center}
+.abbc-page .cielo-panel{display:grid;gap:12px;margin-top:2px}
+.abbc-page .secure-note{display:flex;align-items:flex-start;gap:9px;background:rgba(54,153,119,.13);border:1px solid rgba(54,153,119,.35);color:#d9f3ea;border-radius:11px;padding:11px 12px;margin:0;font-size:.86rem;font-weight:800;line-height:1.45}
+.abbc-page .secure-note svg{flex:none;margin-top:1px;color:#baf0dc}
+.abbc-page .cielo-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.abbc-page .cielo-form label{display:grid;gap:6px}
+.abbc-page .cielo-form label span{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:#a9c8cc;font-weight:800}
+.abbc-page .cielo-form input{width:100%;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.08);color:#fff;border-radius:10px;padding:11px 12px;font:600 .94rem 'Mulish',Arial,sans-serif;outline:none;transition:border-color .2s, box-shadow .2s, background .2s}
+.abbc-page .cielo-form input::placeholder{color:#83aab0}
+.abbc-page .cielo-form input:focus{border-color:#f3c373;box-shadow:0 0 0 3px rgba(243,195,115,.16);background:rgba(255,255,255,.11)}
 .abbc-page .method-title{color:#fff;font-weight:900;font-size:1rem;margin:0 0 10px}
 .abbc-page .qrbox{background:#fff;border-radius:14px;padding:12px;width:168px;height:168px;display:grid;place-items:center;margin-bottom:18px}
 .abbc-page .qrbox svg{width:100%;height:100%;display:block}
@@ -1752,6 +1979,8 @@ const CSS = `
   .abbc-page .qs-card{position:static}
   .abbc-page .cards{grid-template-columns:repeat(2,1fr)}
   .abbc-page .dgrid{grid-template-columns:1fr;max-width:520px;margin-inline:auto}
+  .abbc-page .payment-section{grid-template-columns:1fr;max-width:620px}
+  .abbc-page .payment-method-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .abbc-page .ctt-grid{grid-template-columns:1fr}
   .abbc-page .foot-top{grid-template-columns:1fr 1fr}
 }
@@ -1769,6 +1998,11 @@ const CSS = `
   .abbc-page .international-document-row{grid-template-columns:1fr}
   .abbc-page .international-money-row{grid-template-columns:1fr}
   .abbc-page .international-terms-row{grid-template-columns:1fr}
+  .abbc-page .payment-method-grid{grid-template-columns:1fr}
+  .abbc-page .payment-methods,.abbc-page .payment-panel{padding:20px 16px}
+  .abbc-page .payment-detail-rows p{display:grid;gap:4px}
+  .abbc-page .payment-detail-rows b{text-align:left;max-width:100%}
+  .abbc-page .cielo-form{grid-template-columns:1fr}
   .abbc-page .foot-top{grid-template-columns:1fr}
   .abbc-page .pad{padding:60px 0}
   .abbc-page{font-size:16px}

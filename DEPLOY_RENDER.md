@@ -9,22 +9,25 @@ Este projeto deve ser publicado como **Web Service** no Render, porque o build d
 - Runtime: `Node`
 - Node: `22`
 
-## Variavel da Cielo
+## Variaveis da Cielo
 
-Crie a variavel de ambiente abaixo no Render:
+Crie as variaveis de ambiente abaixo no Render:
 
 ```bash
-VITE_CIELO_PAYMENT_LINK=https://link.cielo.com.br/seu-link-de-pagamento
+CIELO_MERCHANT_ID=seu-merchant-id
+CIELO_MERCHANT_KEY=sua-merchant-key
+CIELO_ENV=production
+SITE_URL=https://associacaoabbc.com.br
 ```
 
-Troque o valor pelo link de pagamento real gerado no painel da Cielo.
+Essas credenciais ficam apenas no servidor. Nao use prefixo `VITE_` para Merchant ID ou Merchant Key.
 
 ## Passo a passo
 
 1. Suba este projeto para um repositorio no GitHub.
 2. No Render, escolha **New +** e depois **Blueprint** se quiser usar `render.yaml`, ou **Web Service** para configurar manualmente.
 3. Conecte o repositorio.
-4. Configure a variavel `VITE_CIELO_PAYMENT_LINK`.
+4. Configure as variaveis `CIELO_MERCHANT_ID`, `CIELO_MERCHANT_KEY`, `CIELO_ENV` e `SITE_URL`.
 5. Faça o deploy.
 
-Depois do deploy, teste o botao **Doar com cartao** na secao **Como ajudar**.
+Depois do deploy, teste as opcoes **Link de Pagamento**, **Credito** e **Debito** na secao **Formas de Pagamento**.

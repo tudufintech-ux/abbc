@@ -9,12 +9,24 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as PagamentoCanceladoRouteImport } from './routes/pagamento-cancelado'
+import { Route as ObrigadoRouteImport } from './routes/obrigado'
 import { Route as AbbcRouteImport } from './routes/abbc'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as PayInvoiceNumberRouteImport } from './routes/pay/$invoiceNumber'
 import { Route as ApiDonationsRegisterRouteImport } from './routes/api/donations/register'
 import { Route as ApiCieloCreatePaymentLinkRouteImport } from './routes/api/cielo/create-payment-link'
 
+const PagamentoCanceladoRoute = PagamentoCanceladoRouteImport.update({
+  id: '/pagamento-cancelado',
+  path: '/pagamento-cancelado',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ObrigadoRoute = ObrigadoRouteImport.update({
+  id: '/obrigado',
+  path: '/obrigado',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AbbcRoute = AbbcRouteImport.update({
   id: '/abbc',
   path: '/abbc',
@@ -45,6 +57,8 @@ const ApiCieloCreatePaymentLinkRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/abbc': typeof AbbcRoute
+  '/obrigado': typeof ObrigadoRoute
+  '/pagamento-cancelado': typeof PagamentoCanceladoRoute
   '/pay/$invoiceNumber': typeof PayInvoiceNumberRoute
   '/api/cielo/create-payment-link': typeof ApiCieloCreatePaymentLinkRoute
   '/api/donations/register': typeof ApiDonationsRegisterRoute
@@ -52,6 +66,8 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/abbc': typeof AbbcRoute
+  '/obrigado': typeof ObrigadoRoute
+  '/pagamento-cancelado': typeof PagamentoCanceladoRoute
   '/pay/$invoiceNumber': typeof PayInvoiceNumberRoute
   '/api/cielo/create-payment-link': typeof ApiCieloCreatePaymentLinkRoute
   '/api/donations/register': typeof ApiDonationsRegisterRoute
@@ -60,6 +76,8 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/abbc': typeof AbbcRoute
+  '/obrigado': typeof ObrigadoRoute
+  '/pagamento-cancelado': typeof PagamentoCanceladoRoute
   '/pay/$invoiceNumber': typeof PayInvoiceNumberRoute
   '/api/cielo/create-payment-link': typeof ApiCieloCreatePaymentLinkRoute
   '/api/donations/register': typeof ApiDonationsRegisterRoute
@@ -69,6 +87,8 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/abbc'
+    | '/obrigado'
+    | '/pagamento-cancelado'
     | '/pay/$invoiceNumber'
     | '/api/cielo/create-payment-link'
     | '/api/donations/register'
@@ -76,6 +96,8 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/abbc'
+    | '/obrigado'
+    | '/pagamento-cancelado'
     | '/pay/$invoiceNumber'
     | '/api/cielo/create-payment-link'
     | '/api/donations/register'
@@ -83,6 +105,8 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/abbc'
+    | '/obrigado'
+    | '/pagamento-cancelado'
     | '/pay/$invoiceNumber'
     | '/api/cielo/create-payment-link'
     | '/api/donations/register'
@@ -91,6 +115,8 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AbbcRoute: typeof AbbcRoute
+  ObrigadoRoute: typeof ObrigadoRoute
+  PagamentoCanceladoRoute: typeof PagamentoCanceladoRoute
   PayInvoiceNumberRoute: typeof PayInvoiceNumberRoute
   ApiCieloCreatePaymentLinkRoute: typeof ApiCieloCreatePaymentLinkRoute
   ApiDonationsRegisterRoute: typeof ApiDonationsRegisterRoute
@@ -98,6 +124,20 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/pagamento-cancelado': {
+      id: '/pagamento-cancelado'
+      path: '/pagamento-cancelado'
+      fullPath: '/pagamento-cancelado'
+      preLoaderRoute: typeof PagamentoCanceladoRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/obrigado': {
+      id: '/obrigado'
+      path: '/obrigado'
+      fullPath: '/obrigado'
+      preLoaderRoute: typeof ObrigadoRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/abbc': {
       id: '/abbc'
       path: '/abbc'
@@ -139,6 +179,8 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AbbcRoute: AbbcRoute,
+  ObrigadoRoute: ObrigadoRoute,
+  PagamentoCanceladoRoute: PagamentoCanceladoRoute,
   PayInvoiceNumberRoute: PayInvoiceNumberRoute,
   ApiCieloCreatePaymentLinkRoute: ApiCieloCreatePaymentLinkRoute,
   ApiDonationsRegisterRoute: ApiDonationsRegisterRoute,
