@@ -4,7 +4,7 @@ import {
   Heart, Check, Copy, Users, GraduationCap, Activity, Briefcase,
   HeartHandshake, Scale, Zap, Landmark, Home, Building2,
   UserRound, Mail, Phone, MessageCircle, Menu, FileText, Download,
-  CreditCard, Receipt, ExternalLink, AlertCircle,
+  CreditCard, Receipt, AlertCircle,
 } from "lucide-react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
@@ -81,8 +81,7 @@ const PAYMENT_TERM_OPTIONS = [
   "Immediate Payment",
   "Custom",
 ] as const;
-const PAYMENT_METHODS = ["Invoice", "Pix", "TED", "DOC", "Link de Pagamento", "Crédito", "Débito"] as const;
-const CIELO_PAYMENT_URL = import.meta.env.VITE_CIELO_PAYMENT_URL?.trim() ?? "";
+const PAYMENT_METHODS = ["Invoice", "Pix", "TED", "DOC", "Crédito", "Débito"] as const;
 const CARD_BRANDS = ["Visa", "Master", "Amex", "Elo", "Hipercard", "Diners", "Discover", "JCB", "Aura"] as const;
 const WHATSAPP_RECEIPT_URL = "https://wa.me/5511921813353?text=" + encodeURIComponent(
   "Olá, A.B.B.C. Estou enviando o comprovante da minha doação.",
@@ -1178,29 +1177,7 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
     </div>
   );
 
-  const LinkPaymentPanel = () => (
-    <div className="cielo-panel">
-      <p className="secure-note">
-        <AlertCircle size={16} />
-        Link de pagamento manual configurável por URL pública. Para cartão no site, use Crédito ou Débito.
-      </p>
-      {CIELO_PAYMENT_URL ? (
-        <a className="btn btn-gold pay-link" href={CIELO_PAYMENT_URL} target="_blank" rel="noopener noreferrer">
-          <ExternalLink size={18} /> Abrir link de pagamento
-        </a>
-      ) : (
-        <p className="donation-error">Link de pagamento em ativação. Use Pix, TED, DOC ou Invoice por enquanto.</p>
-      )}
-    </div>
-  );
-
-  const CardPaymentPanel = ({
-    method,
-    buttonLabel,
-  }: {
-    method: CieloPaymentMethod;
-    buttonLabel: string;
-  }) => {
+  const renderCardPaymentPanel = (method: CieloPaymentMethod, buttonLabel: string) => {
     const isBusy = cardPaymentState === "tokenizing" || cardPaymentState === "authorizing";
     const currentLabel = cardPaymentState === "tokenizing"
       ? "Validando cartão..."
@@ -1213,7 +1190,7 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
       <div className="cielo-panel">
         <p className="secure-note">
           <AlertCircle size={16} />
-          O cartão é tokenizado pela Cielo via Silent Order Post e autenticação 3DS. Dados crus do cartão não são enviados ao backend da A.B.B.C.
+          Pagamento seguro com tokenização Cielo. Os dados do cartão não são enviados ao servidor da A.B.B.C.
         </p>
         {missingSopClientId ? (
           <p className="donation-error">Pagamento com cartão em ativação pela Cielo. Use Pix, TED, DOC ou Invoice por enquanto.</p>
@@ -1340,7 +1317,6 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
     if (method === "Invoice") return <Receipt size={22} />;
     if (method === "Pix") return <Zap size={22} />;
     if (method === "TED" || method === "DOC") return <Landmark size={22} />;
-    if (method === "Link de Pagamento") return <ExternalLink size={22} />;
     return <CreditCard size={22} />;
   };
 
@@ -1349,7 +1325,6 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
     if (method === "Pix") return "Transferência instantânea com chave CNPJ e comprovante por WhatsApp.";
     if (method === "TED") return "Dados bancários oficiais para transferência identificada.";
     if (method === "DOC") return "Transferência bancária sujeita à compensação.";
-    if (method === "Link de Pagamento") return "Link manual configurável pela instituição.";
     if (method === "Crédito") return "Cartão de crédito tokenizado pela Cielo.";
     return "Cartão de débito tokenizado pela Cielo.";
   };
@@ -1429,24 +1404,13 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
       );
     }
 
-    if (selectedPaymentMethod === "Link de Pagamento") {
-      return (
-        <article className="payment-panel">
-          <span className="tag"><ExternalLink size={15} /> Link manual</span>
-          <h3>Link de Pagamento</h3>
-          <p className="sub">Use o link de pagamento configurado pela A.B.B.C. quando disponível.</p>
-          <LinkPaymentPanel />
-        </article>
-      );
-    }
-
     if (selectedPaymentMethod === "Crédito") {
       return (
         <article className="payment-panel">
           <span className="tag"><CreditCard size={15} /> Cielo</span>
           <h3>Crédito</h3>
-          <p className="sub">Pague com cartão de crédito no site. A tokenização acontece pela Cielo e a A.B.B.C. não recebe dados crus do cartão.</p>
-          <CardPaymentPanel method="credit" buttonLabel="Pagar com cartão de crédito" />
+          <p className="sub">Pagamento seguro com tokenização Cielo. Os dados do cartão não são enviados ao servidor da A.B.B.C.</p>
+          {renderCardPaymentPanel("credit", "Pagar com cartão de crédito")}
         </article>
       );
     }
@@ -1455,8 +1419,8 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
       <article className="payment-panel">
         <span className="tag"><CreditCard size={15} /> Cielo</span>
         <h3>Débito</h3>
-        <p className="sub">Pague com cartão de débito no site. A autorização é feita pela API E-commerce da Cielo usando token seguro.</p>
-        <CardPaymentPanel method="debit" buttonLabel="Pagar com cartão de débito" />
+        <p className="sub">Pagamento seguro com tokenização Cielo. Os dados do cartão não são enviados ao servidor da A.B.B.C.</p>
+        {renderCardPaymentPanel("debit", "Pagar com cartão de débito")}
       </article>
     );
   };

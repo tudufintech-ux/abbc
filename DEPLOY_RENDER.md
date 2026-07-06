@@ -20,11 +20,9 @@ CIELO_SOP_CLIENT_ID=seu-client-id-sop
 CIELO_3DS_CLIENT_ID=seu-client-id-3ds
 CIELO_ENV=production
 SITE_URL=https://abbc-dw0f.onrender.com
-VITE_CIELO_PAYMENT_URL=
 ```
 
 Essas credenciais ficam apenas no servidor. Nao use prefixo `VITE_` para Merchant ID ou Merchant Key.
-`VITE_CIELO_PAYMENT_URL` e opcional e so alimenta a opcao manual de Link de Pagamento.
 
 ## Passo a passo
 
@@ -34,4 +32,4 @@ Essas credenciais ficam apenas no servidor. Nao use prefixo `VITE_` para Merchan
 4. Configure as variaveis `CIELO_MERCHANT_ID`, `CIELO_MERCHANT_KEY`, `CIELO_SOP_CLIENT_ID`, `CIELO_3DS_CLIENT_ID`, `CIELO_ENV` e `SITE_URL`.
 5. Faça o deploy.
 
-Depois do deploy, teste as opcoes **Link de Pagamento**, **Credito** e **Debito** na secao **Formas de Pagamento**.
+Depois do deploy, teste as opcoes **Credito** e **Debito** na secao **Formas de Pagamento**.
