@@ -5,7 +5,7 @@ const cardPaymentInputSchema = z.object({
   amount: z.number().positive(),
   method: z.enum(["credit", "debit"]),
   paymentToken: z.string().min(1),
-  brand: z.string().min(1),
+  brand: z.enum(["Visa", "Mastercard", "Elo", "Amex", "Hipercard", "Diners", "Discover"]),
   installments: z.number().int().positive().optional(),
   donorName: z.string().optional(),
   donorEmail: z.string().email().optional().or(z.literal("")),
@@ -30,10 +30,6 @@ function getRequiredEnv(env: ServerEnv, name: string) {
     throw new Error(`Variável de ambiente ${name} não configurada.`);
   }
   return value;
-}
-
-function getOptionalEnv(env: ServerEnv, name: string) {
-  return env[name]?.trim() || "";
 }
 
 function getCieloSalesEndpoint(env: ServerEnv) {
@@ -62,8 +58,6 @@ export const getCieloCardClientConfig = createServerFn({ method: "GET" })
     const env = processModule.default.env;
 
     return {
-      sopClientId: getOptionalEnv(env, "CIELO_SOP_CLIENT_ID"),
-      threeDsClientId: getOptionalEnv(env, "CIELO_3DS_CLIENT_ID"),
       env: env.CIELO_ENV?.trim().toLowerCase() === "sandbox" ? "sandbox" : "production",
     };
   });

@@ -82,17 +82,16 @@ const PAYMENT_TERM_OPTIONS = [
   "Custom",
 ] as const;
 const PAYMENT_METHODS = ["Invoice", "Pix", "TED", "DOC", "Crédito", "Débito"] as const;
-const CARD_BRANDS = ["Visa", "Master", "Amex", "Elo", "Hipercard", "Diners", "Discover", "JCB", "Aura"] as const;
+const PUBLIC_CIELO_SOP_CLIENT_ID = import.meta.env.VITE_CIELO_SOP_CLIENT_ID?.trim() ?? "";
 const WHATSAPP_RECEIPT_URL = "https://wa.me/5511921813353?text=" + encodeURIComponent(
   "Olá, A.B.B.C. Estou enviando o comprovante da minha doação.",
 );
 
 type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 type CieloPaymentMethod = "credit" | "debit";
+type CieloCardBrand = "Visa" | "Mastercard" | "Elo" | "Amex" | "Hipercard" | "Diners" | "Discover" | "Unknown";
 type CardPaymentState = "idle" | "tokenizing" | "authorizing" | "approved" | "declined" | "error";
 type CieloCardClientConfig = {
-  sopClientId: string;
-  threeDsClientId: string;
   env: "production" | "sandbox";
 };
 type CieloPaymentFormState = {
@@ -104,7 +103,6 @@ type CieloPaymentFormState = {
   cardNumber: string;
   cardExpiration: string;
   cardCvv: string;
-  brand: string;
   installments: string;
 };
 
@@ -117,7 +115,6 @@ const INITIAL_CIELO_PAYMENT_FORM: CieloPaymentFormState = {
   cardNumber: "",
   cardExpiration: "",
   cardCvv: "",
-  brand: "",
   installments: "1",
 };
 
@@ -128,6 +125,18 @@ type CieloTokenResponse = {
   cardToken?: unknown;
   Token?: unknown;
   token?: unknown;
+  message?: unknown;
+  Message?: unknown;
+  errors?: unknown;
+  Errors?: unknown;
+};
+
+type CieloSopRuntimeStatus = {
+  hasSopClientId: boolean;
+  sopClientIdLength: number;
+  cieloWindowKeys: string[];
+  scriptSources: string[];
+  hasKnownSdkObject: boolean;
 };
 
 function onlyDigits(value: string) {
@@ -149,6 +158,106 @@ function parseCardExpiration(value: string) {
   return {
     month: month.padStart(2, "0"),
     year: year.length === 2 ? `20${year}` : year,
+  };
+}
+
+function isBetween(value: number, min: number, max: number) {
+  return value >= min && value <= max;
+}
+
+function detectCardBrand(cardNumber: string): CieloCardBrand {
+  const digits = onlyDigits(cardNumber);
+  const firstTwo = Number(digits.slice(0, 2));
+  const firstFour = Number(digits.slice(0, 4));
+  const firstSix = Number(digits.slice(0, 6));
+
+  if (/^4/.test(digits)) return "Visa";
+  if (isBetween(firstTwo, 51, 55) || isBetween(firstFour, 2221, 2720)) return "Mastercard";
+  if (/^(34|37)/.test(digits)) return "Amex";
+  if (/^(36|38|39)/.test(digits)) return "Diners";
+  if (/^(6011|65)/.test(digits)) return "Discover";
+  if (/^(606282|3841|3840)/.test(digits)) return "Hipercard";
+  if (
+    /^(401178|401179|431274|438935|451416|457393|457631|457632|504175|5067|5090|627780|636297|636368)/.test(digits)
+    || isBetween(firstSix, 506699, 506778)
+    || isBetween(firstSix, 509000, 509999)
+    || isBetween(firstSix, 650031, 650033)
+    || isBetween(firstSix, 650035, 650051)
+    || isBetween(firstSix, 650405, 650439)
+    || isBetween(firstSix, 650485, 650538)
+    || isBetween(firstSix, 650541, 650598)
+    || isBetween(firstSix, 650700, 650718)
+    || isBetween(firstSix, 650720, 650727)
+    || isBetween(firstSix, 650901, 650978)
+    || isBetween(firstSix, 651652, 651679)
+    || isBetween(firstSix, 655000, 655019)
+    || isBetween(firstSix, 655021, 655058)
+  ) return "Elo";
+
+  return "Unknown";
+}
+
+function isValidLuhn(cardNumber: string) {
+  const digits = onlyDigits(cardNumber);
+  if (digits.length < 13 || digits.length > 19) return false;
+
+  let sum = 0;
+  let shouldDouble = false;
+  for (let index = digits.length - 1; index >= 0; index -= 1) {
+    let digit = Number(digits[index]);
+    if (shouldDouble) {
+      digit *= 2;
+      if (digit > 9) digit -= 9;
+    }
+    sum += digit;
+    shouldDouble = !shouldDouble;
+  }
+  return sum % 10 === 0;
+}
+
+function isValidCardExpiration(value: string) {
+  if (!/^\d{2}\/\d{2}$/.test(value)) return false;
+
+  const { month, year } = parseCardExpiration(value);
+  const monthNumber = Number(month);
+  const yearNumber = Number(year);
+  if (!isBetween(monthNumber, 1, 12) || !Number.isFinite(yearNumber)) return false;
+
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
+  return yearNumber > currentYear || (yearNumber === currentYear && monthNumber >= currentMonth);
+}
+
+function isValidCardCvv(cvv: string, brand: CieloCardBrand) {
+  const digits = onlyDigits(cvv);
+  if (brand === "Amex") return digits.length === 4;
+  return digits.length >= 3 && digits.length <= 4;
+}
+
+function getCieloSopRuntimeStatus(): CieloSopRuntimeStatus {
+  if (typeof window === "undefined") {
+    return {
+      hasSopClientId: false,
+      sopClientIdLength: 0,
+      cieloWindowKeys: [],
+      scriptSources: [],
+      hasKnownSdkObject: false,
+    };
+  }
+
+  const windowRecord = window as unknown as Record<string, unknown>;
+  const cieloWindowKeys = Object.keys(windowRecord).filter((key) => /cielo|sop|silent/i.test(key));
+  const scriptSources = Array.from(document.scripts)
+    .map((script) => script.src)
+    .filter((src) => /cielo|sop|silent/i.test(src));
+
+  return {
+    hasSopClientId: PUBLIC_CIELO_SOP_CLIENT_ID.length > 0,
+    sopClientIdLength: PUBLIC_CIELO_SOP_CLIENT_ID.length,
+    cieloWindowKeys,
+    scriptSources,
+    hasKnownSdkObject: cieloWindowKeys.length > 0 || scriptSources.length > 0,
   };
 }
 
@@ -757,6 +866,10 @@ export default function ABBC() {
   const [isCieloClientConfigLoading, setIsCieloClientConfigLoading] = useState(false);
 
   const selectedInternationalCurrency = getCurrencyConfig(internationalInvoiceForm.currency);
+  const detectedCardBrand = useMemo(
+    () => detectCardBrand(cieloPaymentForm.cardNumber),
+    [cieloPaymentForm.cardNumber],
+  );
   const filteredCurrencies = useMemo(() => {
     const term = currencySearch.trim().toLowerCase();
     if (!term) return SUPPORTED_CURRENCIES;
@@ -856,34 +969,43 @@ export default function ABBC() {
     }
   }
 
-  function getRequiredCardPaymentError(method: CieloPaymentMethod, amount: number) {
+  function getRequiredCardPaymentError(method: CieloPaymentMethod, amount: number, brand: CieloCardBrand) {
     if (!Number.isFinite(amount) || amount <= 0) return "Informe um valor maior que zero para gerar o pagamento.";
     if (!cieloPaymentForm.donorName.trim()) return "Informe o nome do doador.";
     if (!cieloPaymentForm.cardHolder.trim()) return "Informe o nome impresso no cartão.";
-    if (onlyDigits(cieloPaymentForm.cardNumber).length < 13) return "Informe um número de cartão válido.";
-    if (!/^\d{2}\/\d{2}$/.test(cieloPaymentForm.cardExpiration)) return "Informe a validade no formato MM/AA.";
-    if (onlyDigits(cieloPaymentForm.cardCvv).length < 3) return "Informe o CVV.";
-    if (!cieloPaymentForm.brand.trim()) return "Informe a bandeira do cartão.";
+    if (!isValidLuhn(cieloPaymentForm.cardNumber)) return "Informe um número de cartão válido.";
+    if (brand === "Unknown") return "Não foi possível identificar a bandeira do cartão.";
+    if (!isValidCardExpiration(cieloPaymentForm.cardExpiration)) return "Informe uma validade válida no formato MM/AA.";
+    if (!isValidCardCvv(cieloPaymentForm.cardCvv, brand)) return "Informe um CVV válido.";
     if (method === "credit" && Number(cieloPaymentForm.installments) < 1) return "Informe a quantidade de parcelas.";
     return null;
   }
 
-  async function tokenizeCieloCard(config: CieloCardClientConfig) {
+  async function tokenizeCieloCard(config: CieloCardClientConfig, brand: CieloCardBrand) {
     const { month, year } = parseCardExpiration(cieloPaymentForm.cardExpiration);
+    const runtimeStatus = getCieloSopRuntimeStatus();
+    console.info("[CIELO][SOP runtime]", runtimeStatus);
+    console.info("[CIELO][tokenize start]", {
+      env: config.env,
+      hasSopClientId: PUBLIC_CIELO_SOP_CLIENT_ID.length > 0,
+      sopClientIdLength: PUBLIC_CIELO_SOP_CLIENT_ID.length,
+      scriptLoaded: runtimeStatus.hasKnownSdkObject,
+      brand,
+    });
+
     const response = await fetch(getCieloPublicCardEndpoint(config.env), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ClientId: config.sopClientId,
+        ClientId: PUBLIC_CIELO_SOP_CLIENT_ID,
       },
       body: JSON.stringify({
-        ClientId: config.sopClientId,
-        ThreeDSClientId: config.threeDsClientId || undefined,
+        ClientId: PUBLIC_CIELO_SOP_CLIENT_ID,
         CardNumber: onlyDigits(cieloPaymentForm.cardNumber),
         Holder: cieloPaymentForm.cardHolder.trim(),
         ExpirationDate: `${month}/${year}`,
         SecurityCode: onlyDigits(cieloPaymentForm.cardCvv),
-        Brand: cieloPaymentForm.brand,
+        Brand: brand,
       }),
     });
 
@@ -897,13 +1019,17 @@ export default function ABBC() {
       }
     }
 
+    console.info("[CIELO][tokenize status]", response.status);
+
     if (!response.ok) {
-      throw new Error("Não foi possível tokenizar o cartão na Cielo.");
+      console.error("[CIELO][tokenize body]", responseBody || responseText);
+      throw new Error("Não foi possível validar o cartão. Confira número, validade, CVV e tente novamente.");
     }
 
     const paymentToken = getTokenFromCieloResponse(responseBody);
     if (!paymentToken) {
-      throw new Error("A Cielo não retornou o token do cartão.");
+      console.error("[CIELO][tokenize missing token]", responseBody || responseText);
+      throw new Error("Não foi possível validar o cartão. Confira número, validade, CVV e tente novamente.");
     }
 
     return paymentToken;
@@ -911,7 +1037,8 @@ export default function ABBC() {
 
   async function handleAuthorizeCardPayment(method: CieloPaymentMethod) {
     const amount = parseDecimalAmount(cieloPaymentForm.amount);
-    const validationError = getRequiredCardPaymentError(method, amount);
+    const brand = detectCardBrand(cieloPaymentForm.cardNumber);
+    const validationError = getRequiredCardPaymentError(method, amount, brand);
     if (validationError) {
       setCieloPaymentError(validationError);
       return;
@@ -922,14 +1049,18 @@ export default function ABBC() {
 
     try {
       const config = await loadCieloClientConfig();
-      if (!config.sopClientId) {
+      if (!PUBLIC_CIELO_SOP_CLIENT_ID) {
+        console.error("[CIELO][SOP config missing]", {
+          hasViteSopClientId: false,
+          env: config.env,
+        });
         setCardPaymentState("error");
         setCieloPaymentError("Pagamento com cartão em ativação pela Cielo. Use Pix, TED, DOC ou Invoice por enquanto.");
         return;
       }
 
       setCardPaymentState("tokenizing");
-      const paymentToken = await tokenizeCieloCard(config);
+      const paymentToken = await tokenizeCieloCard(config, brand);
 
       setCardPaymentState("authorizing");
       const result = await authorizeCieloCardPayment({
@@ -937,7 +1068,7 @@ export default function ABBC() {
           amount,
           method,
           paymentToken,
-          brand: cieloPaymentForm.brand,
+          brand,
           installments: method === "credit" ? Number(cieloPaymentForm.installments) || 1 : undefined,
           donorName: cieloPaymentForm.donorName.trim() || undefined,
           donorEmail: cieloPaymentForm.donorEmail.trim() || undefined,
@@ -1184,7 +1315,7 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
       : cardPaymentState === "authorizing"
         ? "Autorizando pagamento..."
         : buttonLabel;
-    const missingSopClientId = !isCieloClientConfigLoading && cieloClientConfig?.sopClientId === "";
+    const missingSopClientId = !isCieloClientConfigLoading && PUBLIC_CIELO_SOP_CLIENT_ID === "";
 
     return (
       <div className="cielo-panel">
@@ -1268,19 +1399,9 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
               autoComplete="cc-csc"
             />
           </label>
-          <label>
-            <span>Bandeira</span>
-            <select
-              value={cieloPaymentForm.brand}
-              onChange={(event) => updateCieloPaymentField("brand", event.target.value)}
-              autoComplete="cc-type"
-            >
-              <option value="">Selecione</option>
-              {CARD_BRANDS.map((brand) => (
-                <option key={brand} value={brand}>{brand}</option>
-              ))}
-            </select>
-          </label>
+          <div className="detected-card-brand" aria-live="polite">
+            Bandeira detectada: <strong>{detectedCardBrand}</strong>
+          </div>
           {method === "credit" ? (
             <label>
               <span>Parcelas</span>
@@ -2108,6 +2229,8 @@ const CSS = `
 .abbc-page .cielo-form select{appearance:auto;background:#f7fbfb;color:#173d47}
 .abbc-page .cielo-form input::placeholder{color:#83aab0}
 .abbc-page .cielo-form input:focus,.abbc-page .cielo-form select:focus{border-color:#f3c373;box-shadow:0 0 0 3px rgba(243,195,115,.16);background:rgba(255,255,255,.11)}
+.abbc-page .detected-card-brand{display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid rgba(243,195,115,.30);background:rgba(243,195,115,.12);color:#f8dfae;border-radius:12px;padding:13px 14px;font-size:.86rem;font-weight:800}
+.abbc-page .detected-card-brand strong{color:#fff;font-size:.94rem}
 .abbc-page .method-title{color:#fff;font-weight:900;font-size:1rem;margin:0 0 10px}
 .abbc-page .qrbox{background:#fff;border-radius:14px;padding:12px;width:168px;height:168px;display:grid;place-items:center;margin-bottom:18px}
 .abbc-page .qrbox svg{width:100%;height:100%;display:block}

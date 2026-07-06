@@ -22,9 +22,13 @@ services:
         sync: false
       - key: CIELO_MERCHANT_KEY
         sync: false
-      - key: CIELO_SOP_CLIENT_ID
+      - key: VITE_CIELO_SOP_CLIENT_ID
+        sync: false
+      - key: CIELO_SOP_CLIENT_SECRET
         sync: false
       - key: CIELO_3DS_CLIENT_ID
+        sync: false
+      - key: CIELO_3DS_CLIENT_SECRET
         sync: false
       - key: ABBC_BENEFICIARY_NAME
         value: ASSOCIACAO BRASILEIRA DE BENEFICIO A COMUNIDADE
