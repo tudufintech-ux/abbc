@@ -44,9 +44,9 @@ function getSiteUrl(env: ServerEnv) {
 function getCieloCheckoutEndpoint(env: ServerEnv) {
   const cieloEnv = env.CIELO_ENV?.trim().toLowerCase() || "production";
   if (cieloEnv === "sandbox") {
-    return "https://cieloecommerce.cielo.com.br/api/public/v1/orders";
+    return "https://cieloecommerce.cielo.com.br/api/public/v1/orders/";
   }
-  return "https://cieloecommerce.cielo.com.br/api/public/v1/orders";
+  return "https://cieloecommerce.cielo.com.br/api/public/v1/orders/";
 }
 
 function toCents(amount: number) {
@@ -88,7 +88,7 @@ export const createCieloPaymentRedirect = createServerFn({ method: "POST" })
     const merchantKey = getRequiredEnv(env, "CIELO_MERCHANT_KEY");
     const siteUrl = getSiteUrl(env);
     const amountInCents = toCents(data.amount);
-    const merchantOrderId = `ABBC-${Date.now()}`;
+    const merchantOrderId = `ABBC${Date.now()}`;
     const methodLabel = getMethodLabel(data.method);
 
     if (!Number.isFinite(amountInCents) || amountInCents <= 0) {
@@ -150,6 +150,8 @@ export const createCieloPaymentRedirect = createServerFn({ method: "POST" })
     }
 
     if (!response.ok) {
+      console.error("[CIELO][status]", response.status);
+      console.error("[CIELO][body]", responseBody);
       throw new Error("A Cielo recusou a criação do pagamento. Verifique as credenciais e tente novamente.");
     }
 
