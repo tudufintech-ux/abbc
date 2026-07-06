@@ -1077,6 +1077,27 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
     );
   };
 
+  const PaymentMethodIcon = ({ method }: { method: PaymentMethod }) => {
+    if (method === "Invoice") return <Receipt size={22} />;
+    if (method === "Pix") return <Zap size={22} />;
+    if (method === "TED" || method === "DOC") return <Landmark size={22} />;
+    if (method === "Link de Pagamento") return <ExternalLink size={22} />;
+    return <CreditCard size={22} />;
+  };
+
+  const getPaymentMethodDescription = (method: PaymentMethod) => {
+    if (method === "Invoice") return "Documento formal para doações nacionais ou internacionais.";
+    if (method === "Pix") return "Transferência instantânea com chave CNPJ e comprovante por WhatsApp.";
+    if (method === "TED") return "Dados bancários oficiais para transferência identificada.";
+    if (method === "DOC") return "Transferência bancária sujeita à compensação.";
+    if (method === "Link de Pagamento") return "Pagamento seguro via Cielo com redirecionamento.";
+    if (method === "Crédito") return "Cartão de crédito em ambiente seguro Cielo.";
+    return "Cartão de débito em ambiente seguro Cielo.";
+  };
+
+  const isCieloPaymentMethod = (method: PaymentMethod) =>
+    method === "Link de Pagamento" || method === "Crédito" || method === "Débito";
+
   const renderPaymentDetails = () => {
     if (selectedPaymentMethod === "Invoice") {
       return (
@@ -1217,25 +1238,29 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
 
       {/* HERO */}
       <section className="hero" id="inicio">
-        <svg className="hero-arc" viewBox="0 0 1300 420" fill="none" aria-hidden="true">
-          <path d="M70 380 C 320 70, 980 70, 1230 380" stroke="url(#g1)" strokeWidth="6" strokeLinecap="round" />
-          <defs>
-            <linearGradient id="g1" x1="70" y1="0" x2="1230" y2="0" gradientUnits="userSpaceOnUse">
-              <stop stopColor="#E0992E" stopOpacity="0" />
-              <stop offset=".25" stopColor="#E0992E" stopOpacity=".9" />
-              <stop offset=".55" stopColor="#C47E1C" />
-              <stop offset="1" stopColor="#E0992E" stopOpacity="0" />
-            </linearGradient>
-          </defs>
-        </svg>
         <div className="wrap hero-grid">
           <div className="hero-copy reveal">
             <span className="eyebrow">Associação sem fins lucrativos · desde 2016</span>
-            <h1>Mãos que acolhem, <em>vidas que se transformam.</em></h1>
-            <p className="lead">A Associação Brasileira de Benefício à Comunidade promove dignidade, acolhimento e oportunidades reais para famílias em situação de vulnerabilidade social em São Paulo.</p>
+            <h1>Benefício à comunidade com seriedade, acolhimento e transparência.</h1>
+            <p className="lead">A A.B.B.C. transforma doações em atendimento social, educação, cultura, esporte, qualificação e apoio real para famílias em situação de vulnerabilidade.</p>
             <div className="hero-actions">
               <a className="btn btn-gold" href="#doar"><Heart size={18} /> Fazer uma doação</a>
-              <a className="btn btn-ghost" href="#quem-somos">Conheça a associação</a>
+              <button
+                className="btn btn-ghost"
+                type="button"
+                onClick={() => {
+                  setSelectedPaymentMethod("Invoice");
+                  setIsInternationalDonationModalOpen(true);
+                }}
+              >
+                <FileText size={18} /> Gerar invoice
+              </button>
+            </div>
+            <div className="hero-badges" aria-label="Formas de pagamento aceitas">
+              <span>Pix</span>
+              <span>Cartão</span>
+              <span>Invoice</span>
+              <span>Transferência</span>
             </div>
             <div className="trust-row">
               <span><Check size={16} /> CNPJ 26.714.591/0001-52</span>
@@ -1244,10 +1269,15 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
             </div>
           </div>
           <div className="hero-figure reveal">
-            <div className="figwrap">
-              <div className="halo" />
-              <div className="ring" />
+            <div className="hero-payment-card" aria-label="Pagamentos online disponíveis">
               <img src={LOGO} alt="Três figuras acolhidas por mãos formando um coração — símbolo da A.B.B.C" />
+              <span>Pagamentos online</span>
+              <h2>Doe com Pix, cartão, invoice ou transferência.</h2>
+              <p>Fluxo seguro com redirecionamento para Cielo nos pagamentos por cartão e link de pagamento.</p>
+              <div>
+                <small>Ambiente seguro</small>
+                <b>Cielo</b>
+              </div>
             </div>
           </div>
         </div>
@@ -1349,26 +1379,32 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
       <section className="pad doar" id="doar">
         <div className="wrap">
           <div className="sec-head reveal">
-            <span className="eyebrow">Como ajudar</span>
-            <h2>Sua doação vira ação concreta.</h2>
-            <p>Escolha a forma mais prática para você. Cada contribuição mantém e amplia os programas sociais da A.B.B.C.</p>
+            <span className="eyebrow">Pagamentos e doações</span>
+            <h2>Formas de Pagamento</h2>
+            <p>Escolha uma opção segura e siga as instruções oficiais da A.B.B.C. para concluir sua contribuição.</p>
           </div>
           <div className="payment-section reveal">
             <div className="payment-methods" aria-label="Formas de Pagamento">
-              <h3>Formas de Pagamento</h3>
+              <div className="payment-methods-head">
+                <h3>Escolha como doar</h3>
+                <p>Cartão e link de pagamento são processados em ambiente seguro da Cielo.</p>
+              </div>
               <div className="payment-method-grid">
                 {PAYMENT_METHODS.map((method) => (
                   <button
                     key={method}
                     type="button"
-                    className={selectedPaymentMethod === method ? "selected" : ""}
+                    className={"payment-method-card" + (selectedPaymentMethod === method ? " selected" : "")}
                     onClick={() => {
                       setSelectedPaymentMethod(method);
                       setCieloPaymentError(null);
                     }}
                     aria-pressed={selectedPaymentMethod === method}
                   >
-                    {method}
+                    <i><PaymentMethodIcon method={method} /></i>
+                    <strong>{method}</strong>
+                    <span>{getPaymentMethodDescription(method)}</span>
+                    {isCieloPaymentMethod(method) ? <em>Pagamento seguro via Cielo</em> : null}
                   </button>
                 ))}
               </div>
@@ -1731,16 +1767,16 @@ const CSS = `
 .abbc-page .eyebrow{font-family:'Mulish';font-weight:700;font-size:.74rem;letter-spacing:.18em;text-transform:uppercase;color:var(--gold-deep);display:inline-flex;align-items:center;gap:9px}
 .abbc-page .eyebrow::before{content:"";width:26px;height:2px;background:var(--gold);border-radius:2px}
 
-.abbc-page header.nav{position:sticky;top:0;z-index:50;background:rgba(251,249,244,.82);backdrop-filter:blur(12px);border-bottom:1px solid transparent;transition:border-color .3s, box-shadow .3s}
-.abbc-page header.nav.scrolled{border-color:var(--line);box-shadow:0 4px 20px -18px rgba(14,63,75,.6)}
+.abbc-page header.nav{position:sticky;top:0;z-index:50;background:rgba(9,34,42,.88);backdrop-filter:blur(14px);border-bottom:1px solid rgba(243,195,115,.12);transition:border-color .3s, box-shadow .3s, background .3s}
+.abbc-page header.nav.scrolled{background:rgba(9,34,42,.96);border-color:rgba(243,195,115,.18);box-shadow:0 18px 40px -30px rgba(0,0,0,.85)}
 .abbc-page .nav-in{display:flex;align-items:center;justify-content:space-between;height:74px}
 .abbc-page .brand{display:flex;align-items:center;gap:12px}
 .abbc-page .brand img{height:46px;width:auto;display:block}
 .abbc-page .brand .bt{display:flex;flex-direction:column;line-height:1.05}
-.abbc-page .brand .bt b{font-family:'Fraunces';font-weight:700;font-size:1.18rem;color:var(--petrol);letter-spacing:.02em}
-.abbc-page .brand .bt span{font-size:.66rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.abbc-page .brand .bt b{font-family:'Fraunces';font-weight:700;font-size:1.18rem;color:#fff;letter-spacing:.02em}
+.abbc-page .brand .bt span{font-size:.66rem;letter-spacing:.12em;text-transform:uppercase;color:#b9d2d6;font-weight:700}
 .abbc-page nav.links{display:flex;align-items:center;gap:30px}
-.abbc-page nav.links a{font-weight:600;font-size:.95rem;color:var(--petrol);position:relative;padding:6px 0}
+.abbc-page nav.links a{font-weight:700;font-size:.95rem;color:#dceced;position:relative;padding:6px 0}
 .abbc-page nav.links a::after{content:"";position:absolute;left:0;bottom:0;height:2px;width:0;background:var(--gold);transition:width .25s}
 .abbc-page nav.links a:hover::after{width:100%}
 .abbc-page .btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;font-family:'Mulish';font-weight:700;font-size:.97rem;cursor:pointer;border:none;padding:13px 24px;border-radius:999px;transition:transform .2s, box-shadow .2s, background .2s}
@@ -1749,25 +1785,34 @@ const CSS = `
 .abbc-page .btn-ghost{background:transparent;color:var(--petrol);border:1.5px solid var(--petrol)}
 .abbc-page .btn-ghost:hover{background:var(--petrol);color:#fff;transform:translateY(-2px)}
 .abbc-page .nav-cta{display:flex;align-items:center;gap:14px}
-.abbc-page .menu-btn{display:none;align-items:center;justify-content:center;color:var(--petrol)}
+.abbc-page header.nav .btn-ghost{color:#fff;border-color:rgba(255,255,255,.34)}
+.abbc-page header.nav .btn-ghost:hover{background:#fff;color:var(--petrol)}
+.abbc-page .menu-btn{display:none;align-items:center;justify-content:center;color:#fff}
 
-.abbc-page .hero{position:relative;padding:72px 0 86px;overflow:hidden}
-.abbc-page .hero::before{content:"";position:absolute;inset:-20% -10% auto -10%;height:120%;z-index:0;background:radial-gradient(40% 50% at 18% 30%, rgba(47,110,158,.10), transparent 70%),radial-gradient(36% 46% at 82% 22%, rgba(194,74,134,.10), transparent 70%),radial-gradient(50% 60% at 50% 92%, rgba(111,166,60,.09), transparent 70%);pointer-events:none}
-.abbc-page .hero-arc{position:absolute;top:-40px;left:50%;transform:translateX(-50%);width:1300px;max-width:150%;z-index:0;pointer-events:none}
-.abbc-page .hero-grid{position:relative;z-index:2;display:grid;grid-template-columns:1.05fr .95fr;gap:54px;align-items:center}
-.abbc-page .hero-copy h1{font-size:clamp(2.5rem,5.2vw,4rem);color:var(--petrol);margin:18px 0 0}
-.abbc-page .hero-copy h1 em{font-style:italic;color:var(--gold-deep)}
-.abbc-page .hero-copy p.lead{font-size:1.16rem;color:var(--muted);margin:22px 0 32px;max-width:30em}
+.abbc-page .hero{position:relative;padding:104px 0 98px;overflow:hidden;background:linear-gradient(135deg,#071f27 0%,#0e3f4b 48%,#082631 100%);color:#fff}
+.abbc-page .hero::before{content:"";position:absolute;inset:0;z-index:0;background:radial-gradient(48% 62% at 78% 28%, rgba(224,153,46,.20), transparent 70%),linear-gradient(180deg,rgba(255,255,255,.06),transparent 38%);pointer-events:none}
+.abbc-page .hero::after{content:"";position:absolute;inset:auto 0 0;height:1px;background:linear-gradient(90deg,transparent,rgba(243,195,115,.5),transparent)}
+.abbc-page .hero-grid{position:relative;z-index:2;display:grid;grid-template-columns:1.1fr .9fr;gap:64px;align-items:center}
+.abbc-page .hero .eyebrow{color:#f3c373}
+.abbc-page .hero-copy h1{font-size:clamp(2.75rem,5.6vw,5.15rem);color:#fff;margin:20px 0 0;max-width:10.5em;letter-spacing:0}
+.abbc-page .hero-copy p.lead{font-size:1.18rem;color:#c8dcdf;margin:24px 0 34px;max-width:36em;line-height:1.7}
 .abbc-page .hero-actions{display:flex;flex-wrap:wrap;gap:14px}
+.abbc-page .hero .btn-ghost{color:#fff;border-color:rgba(255,255,255,.34);background:rgba(255,255,255,.06)}
+.abbc-page .hero .btn-ghost:hover{background:#fff;color:var(--petrol)}
+.abbc-page .hero-badges{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px}
+.abbc-page .hero-badges span{border:1px solid rgba(243,195,115,.34);background:rgba(243,195,115,.10);color:#ffe2ae;border-radius:999px;padding:8px 12px;font-size:.82rem;font-weight:900}
 .abbc-page .hero-figure{position:relative;display:flex;justify-content:center;align-items:center}
-.abbc-page .hero-figure .figwrap{position:relative;width:min(300px,66%);display:flex;justify-content:center;align-items:center}
-.abbc-page .hero-figure img{position:relative;z-index:1;width:100%;height:auto;filter:drop-shadow(0 16px 30px rgba(14,63,75,.18))}
-.abbc-page .hero-figure .halo{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:132%;aspect-ratio:1;border-radius:50%;background:radial-gradient(circle at 50% 46%, #ffffff 0%, #ffffff 40%, rgba(255,255,255,0) 72%);z-index:0}
-.abbc-page .hero-figure .ring{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:116%;aspect-ratio:1;border-radius:50%;border:1.5px dashed rgba(126,90,168,.4);z-index:0;animation:abbcspin 60s linear infinite}
-@keyframes abbcspin{to{transform:rotate(360deg)}}
+.abbc-page .hero-payment-card{width:min(420px,100%);border:1px solid rgba(255,255,255,.18);background:linear-gradient(180deg,rgba(255,255,255,.12),rgba(255,255,255,.055));box-shadow:0 30px 80px -42px rgba(0,0,0,.9);border-radius:24px;padding:30px;backdrop-filter:blur(10px)}
+.abbc-page .hero-payment-card img{width:92px;height:auto;background:#fff;border-radius:18px;padding:10px;margin-bottom:26px;box-shadow:0 18px 40px -24px rgba(0,0,0,.65)}
+.abbc-page .hero-payment-card > span{display:inline-flex;border-radius:999px;background:rgba(54,153,119,.18);border:1px solid rgba(54,153,119,.45);color:#c4f2df;padding:7px 11px;font-size:.72rem;font-weight:900;letter-spacing:.08em;text-transform:uppercase}
+.abbc-page .hero-payment-card h2{font-size:clamp(1.65rem,3vw,2.35rem);color:#fff;margin:18px 0 12px;letter-spacing:0}
+.abbc-page .hero-payment-card p{color:#c7dde0;font-size:.98rem;margin-bottom:22px}
+.abbc-page .hero-payment-card div{display:flex;align-items:center;justify-content:space-between;border-top:1px solid rgba(255,255,255,.14);padding-top:18px}
+.abbc-page .hero-payment-card small{color:#9fc0c4;text-transform:uppercase;letter-spacing:.1em;font-weight:900;font-size:.68rem}
+.abbc-page .hero-payment-card b{color:#f3c373;font-size:1.05rem}
 .abbc-page .trust-row{display:flex;flex-wrap:wrap;gap:10px 26px;margin-top:34px;position:relative;z-index:2}
-.abbc-page .trust-row span{display:inline-flex;align-items:center;gap:8px;font-size:.85rem;font-weight:600;color:var(--petrol-2)}
-.abbc-page .trust-row svg{color:var(--gold-deep)}
+.abbc-page .trust-row span{display:inline-flex;align-items:center;gap:8px;font-size:.85rem;font-weight:700;color:#b9d2d6}
+.abbc-page .trust-row svg{color:#f3c373}
 
 .abbc-page .pad{padding:84px 0}
 .abbc-page .sec-head{max-width:640px;margin-bottom:46px}
@@ -1795,7 +1840,9 @@ const CSS = `
 .abbc-page .pcard h3{font-size:1.18rem;color:var(--petrol);margin-bottom:8px}
 .abbc-page .pcard p{font-size:.95rem;color:var(--muted)}
 
-.abbc-page .doar{background:linear-gradient(180deg, var(--petrol) 0%, #0c343e 100%);color:#eaf3f4}
+.abbc-page .doar{background:linear-gradient(180deg,#071f27 0%, var(--petrol) 48%, #0a2c36 100%);color:#eaf3f4;position:relative;overflow:hidden}
+.abbc-page .doar::before{content:"";position:absolute;inset:0;background:radial-gradient(42% 60% at 16% 18%,rgba(224,153,46,.14),transparent 70%),radial-gradient(38% 58% at 88% 76%,rgba(46,139,160,.16),transparent 72%);pointer-events:none}
+.abbc-page .doar .wrap{position:relative;z-index:1}
 .abbc-page .doar .eyebrow{color:#f3c373}
 .abbc-page .doar .eyebrow::before{background:var(--gold)}
 .abbc-page .doar .sec-head h2{color:#fff}
@@ -1805,30 +1852,36 @@ const CSS = `
 .abbc-page .dcard .tag{display:inline-flex;align-items:center;gap:9px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;font-size:.72rem;color:#f3c373;margin-bottom:14px}
 .abbc-page .dcard h3{font-family:'Fraunces';font-size:1.5rem;color:#fff;margin-bottom:6px}
 .abbc-page .dcard > p.sub{font-size:.92rem;color:#aecace;margin-bottom:20px}
-.abbc-page .payment-section{display:grid;grid-template-columns:minmax(220px,.42fr) minmax(0,1fr);gap:22px;align-items:start;max-width:980px;margin-inline:auto}
-.abbc-page .payment-methods,.abbc-page .payment-panel{background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.14);border-radius:var(--r);padding:24px;backdrop-filter:blur(4px)}
-.abbc-page .payment-methods h3{font-family:'Fraunces';font-size:1.45rem;color:#fff;margin-bottom:16px}
-.abbc-page .payment-method-grid{display:grid;gap:8px}
-.abbc-page .payment-method-grid button{width:100%;min-height:42px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);color:#eaf3f4;border-radius:10px;padding:10px 12px;text-align:left;font:900 .9rem 'Mulish',Arial,sans-serif;cursor:pointer;transition:background .2s,border-color .2s,color .2s,transform .15s}
-.abbc-page .payment-method-grid button:hover{transform:translateY(-1px);border-color:rgba(243,195,115,.42)}
-.abbc-page .payment-method-grid button.selected{background:var(--gold);border-color:var(--gold);color:#3a2705}
-.abbc-page .payment-panel{min-height:420px;display:flex;flex-direction:column}
+.abbc-page .payment-section{display:grid;gap:24px;max-width:1080px;margin-inline:auto}
+.abbc-page .payment-methods,.abbc-page .payment-panel{background:linear-gradient(180deg,rgba(255,255,255,.11),rgba(255,255,255,.055));border:1px solid rgba(255,255,255,.16);border-radius:22px;padding:28px;backdrop-filter:blur(10px);box-shadow:0 24px 60px -42px rgba(0,0,0,.9)}
+.abbc-page .payment-methods-head{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:20px}
+.abbc-page .payment-methods h3{font-family:'Fraunces';font-size:clamp(1.55rem,2.4vw,2.15rem);color:#fff}
+.abbc-page .payment-methods-head p{max-width:36ch;color:#aecacf;font-size:.94rem}
+.abbc-page .payment-method-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:12px}
+.abbc-page .payment-method-card{width:100%;min-height:178px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.055);color:#eaf3f4;border-radius:16px;padding:16px 14px;text-align:left;font-family:'Mulish',Arial,sans-serif;cursor:pointer;display:flex;flex-direction:column;gap:10px;transition:background .2s,border-color .2s,color .2s,transform .15s,box-shadow .2s}
+.abbc-page .payment-method-card:hover{transform:translateY(-3px);border-color:rgba(243,195,115,.44);box-shadow:0 18px 38px -30px rgba(0,0,0,.85)}
+.abbc-page .payment-method-card.selected{background:linear-gradient(180deg,rgba(243,195,115,.22),rgba(224,153,46,.12));border-color:rgba(243,195,115,.72);color:#fff}
+.abbc-page .payment-method-card i{width:42px;height:42px;border-radius:12px;background:rgba(243,195,115,.13);color:#f3c373;display:grid;place-items:center;font-style:normal}
+.abbc-page .payment-method-card strong{font-size:.98rem;color:#fff;font-weight:900;line-height:1.15}
+.abbc-page .payment-method-card span{color:#b9d2d6;font-size:.79rem;line-height:1.35}
+.abbc-page .payment-method-card em{margin-top:auto;font-style:normal;color:#ffe2ae;font-size:.67rem;letter-spacing:.06em;text-transform:uppercase;font-weight:900}
+.abbc-page .payment-panel{min-height:430px;display:flex;flex-direction:column}
 .abbc-page .payment-panel .tag{display:inline-flex;align-items:center;gap:9px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;font-size:.72rem;color:#f3c373;margin-bottom:14px}
-.abbc-page .payment-panel h3{font-family:'Fraunces';font-size:1.62rem;color:#fff;margin-bottom:8px}
-.abbc-page .payment-panel > p.sub{font-size:.94rem;color:#aecace;margin-bottom:18px;line-height:1.55}
+.abbc-page .payment-panel h3{font-family:'Fraunces';font-size:clamp(1.9rem,3vw,2.55rem);color:#fff;margin-bottom:10px}
+.abbc-page .payment-panel > p.sub{font-size:1rem;color:#c8dcdf;margin-bottom:22px;line-height:1.62;max-width:62ch}
 .abbc-page .payment-detail-rows{display:grid;gap:9px;margin-bottom:16px}
-.abbc-page .payment-detail-rows p{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:0;padding:11px 0;border-bottom:1px solid rgba(255,255,255,.1)}
+.abbc-page .payment-detail-rows p{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:0;padding:13px 0;border-bottom:1px solid rgba(255,255,255,.11)}
 .abbc-page .payment-detail-rows small{color:#8fb3b8;font-size:.68rem;text-transform:uppercase;letter-spacing:.1em;font-weight:800}
 .abbc-page .payment-detail-rows b{color:#fff;font-size:.95rem;text-align:right;overflow-wrap:anywhere;max-width:68%}
 .abbc-page .payment-actions{display:grid;gap:10px;margin-top:auto}
 .abbc-page .payment-actions .btn{width:100%;justify-content:center}
 .abbc-page .cielo-panel{display:grid;gap:12px;margin-top:2px}
-.abbc-page .secure-note{display:flex;align-items:flex-start;gap:9px;background:rgba(54,153,119,.13);border:1px solid rgba(54,153,119,.35);color:#d9f3ea;border-radius:11px;padding:11px 12px;margin:0;font-size:.86rem;font-weight:800;line-height:1.45}
+.abbc-page .secure-note{display:flex;align-items:flex-start;gap:9px;background:rgba(54,153,119,.14);border:1px solid rgba(54,153,119,.38);color:#d9f3ea;border-radius:14px;padding:13px 14px;margin:0;font-size:.88rem;font-weight:800;line-height:1.45}
 .abbc-page .secure-note svg{flex:none;margin-top:1px;color:#baf0dc}
 .abbc-page .cielo-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .abbc-page .cielo-form label{display:grid;gap:6px}
 .abbc-page .cielo-form label span{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:#a9c8cc;font-weight:800}
-.abbc-page .cielo-form input{width:100%;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.08);color:#fff;border-radius:10px;padding:11px 12px;font:600 .94rem 'Mulish',Arial,sans-serif;outline:none;transition:border-color .2s, box-shadow .2s, background .2s}
+.abbc-page .cielo-form input{width:100%;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.10);color:#fff;border-radius:12px;padding:13px 14px;font:700 .94rem 'Mulish',Arial,sans-serif;outline:none;transition:border-color .2s, box-shadow .2s, background .2s}
 .abbc-page .cielo-form input::placeholder{color:#83aab0}
 .abbc-page .cielo-form input:focus{border-color:#f3c373;box-shadow:0 0 0 3px rgba(243,195,115,.16);background:rgba(255,255,255,.11)}
 .abbc-page .method-title{color:#fff;font-weight:900;font-size:1rem;margin:0 0 10px}
@@ -1849,19 +1902,19 @@ const CSS = `
 .abbc-page .invoice-kicker{display:inline-flex;align-items:center;gap:8px;color:#f3c373;font-weight:900;font-size:.82rem;margin-bottom:12px}
 .abbc-page .international-intro{color:#b9d2d6;font-size:.88rem;margin:0 0 12px;line-height:1.5}
 .abbc-page .international-toggle{width:100%;margin-bottom:12px}
-.abbc-page .international-modal-backdrop{position:fixed;inset:0;z-index:140;background:rgba(5,26,32,.74);backdrop-filter:blur(5px);display:grid;place-items:center;padding:24px}
-.abbc-page .international-modal{width:min(720px,calc(100vw - 28px));max-height:min(88vh,820px);background:#0e3f4b;color:#fff;border:1px solid rgba(255,255,255,.18);border-radius:18px;box-shadow:0 28px 90px rgba(0,0,0,.38);display:flex;flex-direction:column;overflow:hidden}
-.abbc-page .international-modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:22px 24px 18px;border-bottom:1px solid rgba(255,255,255,.12);background:linear-gradient(180deg,rgba(255,255,255,.08),rgba(255,255,255,.02))}
+.abbc-page .international-modal-backdrop{position:fixed;inset:0;z-index:140;background:rgba(3,17,22,.76);backdrop-filter:blur(8px);display:grid;place-items:center;padding:24px}
+.abbc-page .international-modal{width:min(760px,calc(100vw - 28px));max-height:min(90vh,850px);background:linear-gradient(180deg,#103f4b,#082a34);color:#fff;border:1px solid rgba(243,195,115,.22);border-radius:22px;box-shadow:0 32px 100px rgba(0,0,0,.46);display:flex;flex-direction:column;overflow:hidden}
+.abbc-page .international-modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:26px 28px 20px;border-bottom:1px solid rgba(255,255,255,.12);background:linear-gradient(180deg,rgba(255,255,255,.10),rgba(255,255,255,.025))}
 .abbc-page .international-modal-head .invoice-kicker{margin-bottom:8px}
 .abbc-page .international-modal-head h3{font-family:'Fraunces';font-size:1.65rem;color:#fff;margin:0 0 4px}
 .abbc-page .international-modal-head p{color:#c6dcdf;font-size:.95rem;margin:0}
 .abbc-page .modal-close{flex:none;width:38px;height:38px;border-radius:999px;border:1px solid rgba(255,255,255,.22);background:rgba(255,255,255,.08);color:#fff;font-size:1.55rem;line-height:1;cursor:pointer;display:grid;place-items:center;transition:background .2s, color .2s, transform .15s}
 .abbc-page .modal-close:hover{background:#fff;color:var(--petrol);transform:translateY(-1px)}
-.abbc-page .international-modal-body{padding:22px 24px 24px;overflow-y:auto}
-.abbc-page .international-form{display:grid;gap:10px}
+.abbc-page .international-modal-body{padding:26px 28px 28px;overflow-y:auto}
+.abbc-page .international-form{display:grid;gap:14px}
 .abbc-page .international-form label{display:grid;gap:6px}
 .abbc-page .international-form label span{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:#a9c8cc;font-weight:800}
-.abbc-page .international-form input,.abbc-page .international-form select,.abbc-page .international-form textarea{width:100%;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.08);color:#fff;border-radius:10px;padding:10px 11px;font:600 .9rem 'Mulish',Arial,sans-serif;outline:none;transition:border-color .2s, box-shadow .2s, background .2s}
+.abbc-page .international-form input,.abbc-page .international-form select,.abbc-page .international-form textarea{width:100%;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.10);color:#fff;border-radius:12px;padding:13px 14px;font:700 .94rem 'Mulish',Arial,sans-serif;outline:none;transition:border-color .2s, box-shadow .2s, background .2s}
 .abbc-page .international-form select{appearance:auto;color:#173d47;background:#f7fbfb}
 .abbc-page .international-form textarea{resize:vertical;min-height:78px}
 .abbc-page .international-form input::placeholder{color:#83aab0}
@@ -1869,7 +1922,7 @@ const CSS = `
 .abbc-page .international-document-row{display:grid;grid-template-columns:minmax(0,.76fr) minmax(0,1fr);gap:10px}
 .abbc-page .international-money-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(250px,.82fr);gap:10px;align-items:start}
 .abbc-page .international-terms-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
-.abbc-page .amount-input-wrap{display:flex;align-items:center;gap:9px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.08);border-radius:10px;padding:0 0 0 11px;transition:border-color .2s, box-shadow .2s, background .2s}
+.abbc-page .amount-input-wrap{display:flex;align-items:center;gap:9px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.10);border-radius:12px;padding:0 0 0 13px;transition:border-color .2s, box-shadow .2s, background .2s}
 .abbc-page .amount-input-wrap:focus-within{border-color:#f3c373;box-shadow:0 0 0 3px rgba(243,195,115,.16);background:rgba(255,255,255,.11)}
 .abbc-page .amount-input-wrap b{flex:none;color:#f3c373;font-weight:900;font-size:.86rem}
 .abbc-page .amount-input-wrap input{border:none!important;background:transparent!important;box-shadow:none!important;padding-left:0}
@@ -1973,14 +2026,14 @@ const CSS = `
 
 @media (max-width:980px){
   .abbc-page .hero-grid{grid-template-columns:1fr;gap:30px}
-  .abbc-page .hero-figure{order:-1}
-  .abbc-page .hero-figure .figwrap{width:min(230px,56%)}
+  .abbc-page .hero-figure{order:-1;justify-content:flex-start}
+  .abbc-page .hero-payment-card{width:min(480px,100%)}
   .abbc-page .qs-grid{grid-template-columns:1fr;gap:30px}
   .abbc-page .qs-card{position:static}
   .abbc-page .cards{grid-template-columns:repeat(2,1fr)}
   .abbc-page .dgrid{grid-template-columns:1fr;max-width:520px;margin-inline:auto}
-  .abbc-page .payment-section{grid-template-columns:1fr;max-width:620px}
-  .abbc-page .payment-method-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .abbc-page .payment-section{grid-template-columns:1fr;max-width:720px}
+  .abbc-page .payment-methods-head{display:grid;gap:8px}
   .abbc-page .ctt-grid{grid-template-columns:1fr}
   .abbc-page .foot-top{grid-template-columns:1fr 1fr}
 }
@@ -1999,6 +2052,10 @@ const CSS = `
   .abbc-page .international-money-row{grid-template-columns:1fr}
   .abbc-page .international-terms-row{grid-template-columns:1fr}
   .abbc-page .payment-method-grid{grid-template-columns:1fr}
+  .abbc-page .hero{padding:76px 0 68px}
+  .abbc-page .hero-copy h1{font-size:2.55rem}
+  .abbc-page .hero-actions .btn{width:100%}
+  .abbc-page .hero-payment-card{padding:24px 20px}
   .abbc-page .payment-methods,.abbc-page .payment-panel{padding:20px 16px}
   .abbc-page .payment-detail-rows p{display:grid;gap:4px}
   .abbc-page .payment-detail-rows b{text-align:left;max-width:100%}
