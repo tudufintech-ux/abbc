@@ -12,6 +12,16 @@ const cardPaymentInputSchema = z.object({
   donorPhone: z.string().optional(),
 });
 
+const cieloCardBrandSchema = z.enum(["Visa", "Master", "Elo", "Amex", "Hipercard", "Diners", "Discover"]);
+
+const cieloCardTokenInputSchema = z.object({
+  cardNumber: z.string().regex(/^\d{13,19}$/),
+  holder: z.string().trim().min(2),
+  expirationDate: z.string().regex(/^\d{2}\/(\d{2}|\d{4})$/),
+  securityCode: z.string().regex(/^\d{3,4}$/),
+  brand: cieloCardBrandSchema,
+});
+
 type ServerEnv = Record<string, string | undefined>;
 
 type CieloSaleResponse = {
@@ -22,6 +32,15 @@ type CieloSaleResponse = {
     ReturnMessage?: string;
     AuthorizationCode?: string;
   };
+};
+
+type CieloCardTokenResponse = {
+  PaymentToken?: unknown;
+  paymentToken?: unknown;
+  CardToken?: unknown;
+  cardToken?: unknown;
+  Token?: unknown;
+  token?: unknown;
 };
 
 function getRequiredEnv(env: ServerEnv, name: string) {
@@ -40,8 +59,32 @@ function getCieloSalesEndpoint(env: ServerEnv) {
   return "https://api.cieloecommerce.cielo.com.br/1/sales/";
 }
 
+function getCieloCardEndpoint(env: ServerEnv) {
+  const cieloEnv = env.CIELO_ENV?.trim().toLowerCase() || "production";
+  if (cieloEnv === "sandbox") {
+    return "https://apisandbox.cieloecommerce.cielo.com.br/1/card/";
+  }
+  return "https://api.cieloecommerce.cielo.com.br/1/card/";
+}
+
 function toCents(amount: number) {
   return Math.round(amount * 100);
+}
+
+function normalizeExpirationDate(expirationDate: string) {
+  const [month = "", year = ""] = expirationDate.split("/");
+  return `${month.padStart(2, "0")}/${year.length === 2 ? `20${year}` : year}`;
+}
+
+function getTokenFromCieloResponse(response: CieloCardTokenResponse) {
+  const token = response.PaymentToken
+    ?? response.paymentToken
+    ?? response.CardToken
+    ?? response.cardToken
+    ?? response.Token
+    ?? response.token;
+
+  return typeof token === "string" ? token : "";
 }
 
 function getPaymentStatus(payment: CieloSaleResponse["Payment"]) {
@@ -59,6 +102,61 @@ export const getCieloCardClientConfig = createServerFn({ method: "GET" })
 
     return {
       env: env.CIELO_ENV?.trim().toLowerCase() === "sandbox" ? "sandbox" : "production",
+    };
+  });
+
+export const createCieloCardToken = createServerFn({ method: "POST" })
+  .validator(cieloCardTokenInputSchema)
+  .handler(async ({ data }) => {
+    const processModule = await import("node:process");
+    const env = processModule.default.env;
+    const merchantId = getRequiredEnv(env, "CIELO_MERCHANT_ID");
+    const merchantKey = getRequiredEnv(env, "CIELO_MERCHANT_KEY");
+    const expirationDate = normalizeExpirationDate(data.expirationDate);
+
+    const response = await fetch(getCieloCardEndpoint(env), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        MerchantId: merchantId,
+        MerchantKey: merchantKey,
+      },
+      body: JSON.stringify({
+        CardNumber: data.cardNumber,
+        Holder: data.holder.trim(),
+        ExpirationDate: expirationDate,
+        SecurityCode: data.securityCode,
+        Brand: data.brand,
+      }),
+    });
+
+    const responseText = await response.text();
+    let responseBody: CieloCardTokenResponse = {};
+    if (responseText) {
+      try {
+        responseBody = JSON.parse(responseText) as CieloCardTokenResponse;
+      } catch {
+        responseBody = {};
+      }
+    }
+
+    if (!response.ok) {
+      console.error("[CIELO][card token status]", response.status);
+      console.error("[CIELO][card token body]", responseBody);
+      throw new Error("Não foi possível validar o cartão. Confira os dados e tente novamente.");
+    }
+
+    const token = getTokenFromCieloResponse(responseBody);
+    if (!token) {
+      console.error("[CIELO][card token status]", response.status);
+      console.error("[CIELO][card token body]", responseBody);
+      throw new Error("Não foi possível validar o cartão. Confira os dados e tente novamente.");
+    }
+
+    return {
+      paymentToken: token,
+      cardToken: token,
+      ...(env.NODE_ENV === "development" ? { rawResponse: responseBody } : {}),
     };
   });
 

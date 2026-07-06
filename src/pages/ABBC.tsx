@@ -22,6 +22,7 @@ import {
 import { registerDonation } from "@/lib/donationSync";
 import {
   authorizeCieloCardPayment,
+  createCieloCardToken,
   getCieloCardClientConfig,
 } from "@/lib/api/cielo.functions";
 
@@ -82,7 +83,6 @@ const PAYMENT_TERM_OPTIONS = [
   "Custom",
 ] as const;
 const PAYMENT_METHODS = ["Invoice", "Pix", "TED", "DOC", "Crédito", "Débito"] as const;
-const PUBLIC_CIELO_SOP_CLIENT_ID = import.meta.env.VITE_CIELO_SOP_CLIENT_ID?.trim() ?? "";
 const WHATSAPP_RECEIPT_URL = "https://wa.me/5511921813353?text=" + encodeURIComponent(
   "Olá, A.B.B.C. Estou enviando o comprovante da minha doação.",
 );
@@ -117,27 +117,6 @@ const INITIAL_CIELO_PAYMENT_FORM: CieloPaymentFormState = {
   cardExpiration: "",
   cardCvv: "",
   installments: "1",
-};
-
-type CieloTokenResponse = {
-  PaymentToken?: unknown;
-  paymentToken?: unknown;
-  CardToken?: unknown;
-  cardToken?: unknown;
-  Token?: unknown;
-  token?: unknown;
-  message?: unknown;
-  Message?: unknown;
-  errors?: unknown;
-  Errors?: unknown;
-};
-
-type CieloSopRuntimeStatus = {
-  hasSopClientId: boolean;
-  sopClientIdLength: number;
-  cieloWindowKeys: string[];
-  scriptSources: string[];
-  hasKnownSdkObject: boolean;
 };
 
 function onlyDigits(value: string) {
@@ -246,69 +225,6 @@ function getCieloApiBrand(brand: CieloCardBrand): CieloApiCardBrand | null {
   if (brand === "Unknown") return null;
   if (brand === "Mastercard") return "Master";
   return brand;
-}
-
-function getCieloTokenErrorDetails(response: unknown) {
-  if (Array.isArray(response)) {
-    return response.map((item) => {
-      if (item && typeof item === "object") {
-        const record = item as Record<string, unknown>;
-        return record.Message ?? record.message ?? record.Description ?? record.description ?? record.Code ?? record.code;
-      }
-      return item;
-    }).filter(Boolean);
-  }
-
-  if (response && typeof response === "object") {
-    const record = response as Record<string, unknown>;
-    return record.Message ?? record.message ?? record.Errors ?? record.errors ?? record.Description ?? record.description;
-  }
-
-  return response;
-}
-
-function getCieloSopRuntimeStatus(): CieloSopRuntimeStatus {
-  if (typeof window === "undefined") {
-    return {
-      hasSopClientId: false,
-      sopClientIdLength: 0,
-      cieloWindowKeys: [],
-      scriptSources: [],
-      hasKnownSdkObject: false,
-    };
-  }
-
-  const windowRecord = window as unknown as Record<string, unknown>;
-  const cieloWindowKeys = Object.keys(windowRecord).filter((key) => /cielo|sop|silent/i.test(key));
-  const scriptSources = Array.from(document.scripts)
-    .map((script) => script.src)
-    .filter((src) => /cielo|sop|silent/i.test(src));
-
-  return {
-    hasSopClientId: PUBLIC_CIELO_SOP_CLIENT_ID.length > 0,
-    sopClientIdLength: PUBLIC_CIELO_SOP_CLIENT_ID.length,
-    cieloWindowKeys,
-    scriptSources,
-    hasKnownSdkObject: cieloWindowKeys.length > 0 || scriptSources.length > 0,
-  };
-}
-
-function getCieloPublicCardEndpoint(env: "production" | "sandbox") {
-  if (env === "sandbox") {
-    return "https://apisandbox.cieloecommerce.cielo.com.br/1/card/";
-  }
-  return "https://api.cieloecommerce.cielo.com.br/1/card/";
-}
-
-function getTokenFromCieloResponse(response: CieloTokenResponse) {
-  const token = response.PaymentToken
-    ?? response.paymentToken
-    ?? response.CardToken
-    ?? response.cardToken
-    ?? response.Token
-    ?? response.token;
-
-  return typeof token === "string" ? token : "";
 }
 
 function getBankDetailsLines(paymentReference?: string, includeInternational = true) {
@@ -1018,64 +934,37 @@ export default function ABBC() {
     const securityCode = onlyDigits(cieloPaymentForm.cardCvv);
     const expirationDate = formatCieloExpirationDate(cieloPaymentForm.cardExpiration);
     const holder = cieloPaymentForm.cardHolder.trim();
-    const runtimeStatus = getCieloSopRuntimeStatus();
-    console.info("[CIELO][SOP runtime]", runtimeStatus);
-    console.info("[CIELO][tokenize start]", {
+    console.info("[CIELO][card token server start]", {
       env: config.env,
-      hasSopClientId: PUBLIC_CIELO_SOP_CLIENT_ID.length > 0,
-      sopClientIdLength: PUBLIC_CIELO_SOP_CLIENT_ID.length,
-      scriptLoaded: runtimeStatus.hasKnownSdkObject,
-      brand,
-    });
-    console.info("[CIELO][tokenize payload]", {
       brand,
       holder,
       expirationDate,
       cardNumberLength: cardNumber.length,
       cardLast4: cardNumber.slice(-4),
       securityCodeLength: securityCode.length,
-      clientIdLength: PUBLIC_CIELO_SOP_CLIENT_ID.length,
     });
 
-    const response = await fetch(getCieloPublicCardEndpoint(config.env), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ClientId: PUBLIC_CIELO_SOP_CLIENT_ID,
+    const result = await createCieloCardToken({
+      data: {
+        cardNumber,
+        holder,
+        expirationDate,
+        securityCode,
+        brand,
       },
-      body: JSON.stringify({
-        CardNumber: cardNumber,
-        Holder: holder,
-        ExpirationDate: expirationDate,
-        SecurityCode: securityCode,
-        Brand: brand,
-      }),
     });
 
-    const responseText = await response.text();
-    let responseBody: CieloTokenResponse = {};
-    if (responseText) {
-      try {
-        responseBody = JSON.parse(responseText) as CieloTokenResponse;
-      } catch {
-        responseBody = {};
-      }
-    }
-
-    console.info("[CIELO][tokenize status]", response.status);
-
-    if (!response.ok) {
-      console.error("[CIELO][tokenize body raw]", JSON.stringify(responseBody, null, 2));
-      console.error("[CIELO][tokenize error details]", getCieloTokenErrorDetails(responseBody) || responseText);
-      throw new Error("Não foi possível validar o cartão. Confira número, validade, CVV e tente novamente.");
-    }
-
-    const paymentToken = getTokenFromCieloResponse(responseBody);
+    const paymentToken = result.paymentToken || result.cardToken;
     if (!paymentToken) {
-      console.error("[CIELO][tokenize body raw]", JSON.stringify(responseBody, null, 2));
-      console.error("[CIELO][tokenize missing token]", getCieloTokenErrorDetails(responseBody) || responseText);
-      throw new Error("Não foi possível validar o cartão. Confira número, validade, CVV e tente novamente.");
+      console.error("[CIELO][card token server missing token]", result);
+      throw new Error("Não foi possível validar o cartão. Confira os dados e tente novamente.");
     }
+
+    console.info("[CIELO][card token server success]", {
+      hasToken: true,
+      tokenLength: paymentToken.length,
+      brand,
+    });
 
     return paymentToken;
   }
@@ -1095,16 +984,6 @@ export default function ABBC() {
 
     try {
       const config = await loadCieloClientConfig();
-      if (!PUBLIC_CIELO_SOP_CLIENT_ID) {
-        console.error("[CIELO][SOP config missing]", {
-          hasViteSopClientId: false,
-          env: config.env,
-        });
-        setCardPaymentState("error");
-        setCieloPaymentError("Pagamento com cartão em ativação pela Cielo. Use Pix, TED, DOC ou Invoice por enquanto.");
-        return;
-      }
-
       setCardPaymentState("tokenizing");
       if (!cieloBrand) {
         setCardPaymentState("error");
@@ -1114,6 +993,12 @@ export default function ABBC() {
       const paymentToken = await tokenizeCieloCard(config, cieloBrand);
 
       setCardPaymentState("authorizing");
+      console.info("[CIELO][authorize start]", {
+        method,
+        amount,
+        brand: cieloBrand,
+        installments: method === "credit" ? Number(cieloPaymentForm.installments) || 1 : undefined,
+      });
       const result = await authorizeCieloCardPayment({
         data: {
           amount,
@@ -1135,7 +1020,7 @@ export default function ABBC() {
       setCieloPaymentError(
         error instanceof Error
           ? error.message
-          : "Não foi possível processar o cartão. Tente novamente em instantes.",
+          : "Não foi possível validar o cartão. Confira os dados e tente novamente.",
       );
     }
   }
@@ -1362,11 +1247,10 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
   const renderCardPaymentPanel = (method: CieloPaymentMethod, buttonLabel: string) => {
     const isBusy = cardPaymentState === "tokenizing" || cardPaymentState === "authorizing";
     const currentLabel = cardPaymentState === "tokenizing"
-      ? "Validando cartão..."
+      ? "Validando cartão com a Cielo..."
       : cardPaymentState === "authorizing"
         ? "Autorizando pagamento..."
         : buttonLabel;
-    const missingSopClientId = !isCieloClientConfigLoading && PUBLIC_CIELO_SOP_CLIENT_ID === "";
 
     return (
       <div className="cielo-panel">
@@ -1374,9 +1258,6 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
           <AlertCircle size={16} />
           Pagamento seguro com tokenização Cielo. Os dados do cartão não são enviados ao servidor da A.B.B.C.
         </p>
-        {missingSopClientId ? (
-          <p className="donation-error">Pagamento com cartão em ativação pela Cielo. Use Pix, TED, DOC ou Invoice por enquanto.</p>
-        ) : null}
         <div className="cielo-form">
           <label>
             <span>Valor</span>
@@ -1477,7 +1358,7 @@ ${getBankDetailsLines(internationalInvoice.invoiceNumber).join("\n")}`
           className="btn btn-gold pay-link"
           type="button"
           onClick={() => handleAuthorizeCardPayment(method)}
-          disabled={isBusy || missingSopClientId}
+          disabled={isBusy}
         >
           <CreditCard size={18} /> {currentLabel}
         </button>

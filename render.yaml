@@ -22,10 +22,6 @@ services:
         sync: false
       - key: CIELO_MERCHANT_KEY
         sync: false
-      - key: VITE_CIELO_SOP_CLIENT_ID
-        sync: false
-      - key: CIELO_SOP_CLIENT_SECRET
-        sync: false
       - key: CIELO_3DS_CLIENT_ID
         sync: false
       - key: CIELO_3DS_CLIENT_SECRET
